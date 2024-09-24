@@ -2,6 +2,8 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask, BlockMask
+from .bert_padding import pad_input, unpad_input, document_ids_from_cu_seqlens
 
 @dataclass
 class ModelArgs:
@@ -155,6 +157,10 @@ class BitBertMLP(nn.Module):
         return self.linear_out(x)
 
 class BitBertSelfAttention(nn.Module):
+    """
+    Self-attention will operate on UNPADDED inputs, so it's 1 long sequence.
+    This means we have to use a block mask so sequences don't attend to each other.
+    """
     def __init__(self, d_model, n_heads, is_causal: bool = False, dropout_p: float = 0.0):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
@@ -162,21 +168,22 @@ class BitBertSelfAttention(nn.Module):
         self.d_model = d_model
         self.qkv = BitLinear(d_model, 3 * d_model)
         self.o = BitLinear(d_model, d_model)
-        self.dropout_p = dropout_p
-        self.is_causal = is_causal
 
-    def split_heads(self, x):
-        B, L, D = x.shape
-        return x.view(B, L, self.n_heads, D // self.n_heads).transpose(1, 2) # B, n_heads, L, d_head
+    def _split_heads(self, qkv_tensor):
+        """
+        Splits the last dimension of a tensor into (num_heads, head_dim), and transposes the result.
+        """
+        B, L, D = qkv_tensor.shape # unpadded, but we unsqueezed batch dim to be 1
+        return qkv_tensor.view(B, L, self.n_heads, D // self.n_heads).transpose(1, 2) # B, n_heads, L, d_head
 
-    def forward(self, x, attn_mask, freqs_cis):
-        xq, xk, xv = self.qkv(x).chunk(3, dim=-1) # each is [bsz, seq_len, d_model]
+    def forward(self, hidden_states, block_mask, freqs_cis):
+        xq, xk, xv = self.qkv(hidden_states).chunk(3, dim=-1) # [total_tokens, d_model]
+        xq, xk, xv = self._split_heads(xq), self._split_heads(xk), self._split_heads(xv)
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
-        attn_out = F.scaled_dot_product_attention(
-            xq, xk, xv, is_causal=self.is_causal, dropout_p=self.dropout_p
+        attn_out = flex_attention(
+            xq, xk, xv, block_mask=block_mask
         )
         return self.o(attn_out)
-
 
 class BitBertBlock(nn.Module):
     """
@@ -188,8 +195,8 @@ class BitBertBlock(nn.Module):
         self.attention = BitBertSelfAttention(args.d_model, args.n_heads, args.is_causal, args.dropout_p)
         self.mlp = BitBertMLP(args.d_model, 3 * args.d_model)
 
-    def forward(self, x, attn_mask, freqs_cis):
-        x = x + self.attention(x, attn_mask, freqs_cis)
+    def forward(self, x, block_mask, freqs_cis):
+        x = x + self.attention(x, block_mask, freqs_cis)
         x = x + self.mlp(x)
         return x
 
@@ -204,10 +211,40 @@ class BitBertModel(nn.Module):
             self.output.weight = self.tok_embeddings.weight
         self.freqs_cis = precompute_freqs_cis(args.d_model, end=max_seq_len)
 
-    def forward(self, x, attn_mask):
-        x = self.tok_embeddings(x)
-        freqs_cis = self.freqs_cis[:x.shape[1], :]
+    def forward(self, input_ids, attention_mask, apply_lm_head: bool = True):
+        # unpad input, we pass flattened input through all layers
+        orig_batch_size, orig_max_seqlen = input_ids.shape
+        hidden_states, indices, cu_seqlens, max_seqlen_in_batch = unpad_input(input_ids, attention_mask)
+        # add batch size dim of 1 to make flex_attention happy
+        hidden_states = hidden_states.unsqueeze(0) # pyright:ignore # (1, total_tokens)
+        total_seq_len = hidden_states.shape[1]
+        # get doc ids for the sequence
+        doc_ids = document_ids_from_cu_seqlens(cu_seqlens)
+
+        # compute block mask once for the whole forward pass
+        def doc_mask_mod(b, h, q_idx, kv_idx):
+            return doc_ids[q_idx] == doc_ids[kv_idx]
+
+        block_mask = create_block_mask(
+            mask_mod=doc_mask_mod,
+            B=None,
+            H=None,
+            Q_LEN=total_seq_len,
+            KV_LEN=total_seq_len,
+            device=hidden_states.device
+        )
+        hidden_states = self.tok_embeddings(hidden_states) # 1, total_tokens, d_model
+        freqs_cis = self.freqs_cis[:total_seq_len, :]
         for layer in self.layers:
-            x = layer(x, attn_mask, freqs_cis)
-        x = self.norm(x)
-        return self.output(x)
+            hidden_states = layer(hidden_states, block_mask, freqs_cis)
+        hidden_states = self.norm(hidden_states)
+
+        # dont forget to add sparse token prediction (Only predict MASK tokens during training)
+        if apply_lm_head:
+            output = self.output(hidden_states).squeeze(0) # (total_tokens, vocab_size)
+        else:
+            output = hidden_states
+
+        # pad output
+        output = pad_input(output, indices, orig_batch_size, orig_max_seqlen)
+        return output
