@@ -20,6 +20,7 @@ special_tokens = {
     # PAD: -1 # not included in the tokenizer; manage it manually
 }
 
+
 def get_tiktoken_encoding():
     mergeable_ranks = load_tiktoken_bpe(
         "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken",
@@ -49,9 +50,10 @@ def get_tiktoken_encoding():
         "pat_str": pat_str,
         "mergeable_ranks": mergeable_ranks,
         "special_tokens": special_tokens,
-        "explicit_n_vocab": VOCAB_SIZE
+        "explicit_n_vocab": VOCAB_SIZE,
     }
     return Encoding(**args)
+
 
 class Tokenizer:
     def __init__(self):
@@ -83,14 +85,16 @@ class Tokenizer:
             t = [t]
         return self.encode_batch(t, **kwargs)
 
-    def _pad(self, tokens: ak.Array | list, max_length: int) -> tuple[np.ndarray, np.ndarray]:
+    def _pad(
+        self, tokens: ak.Array | list, max_length: int
+    ) -> tuple[np.ndarray, np.ndarray]:
         if not isinstance(tokens, ak.Array):
             tokens = ak.Array(tokens)
         sequence_lengths = ak.num(tokens, axis=1)
         tokens = ak.pad_none(tokens, target=max_length, axis=-1, clip=True)
         tokens_padded = np.array(ak.fill_none(tokens, self.pad_id))
         # mask is 0 where pad token is present, 1 otherwise
-        mask = (tokens == self.pad_id).astype(np.int32)
+        mask = (tokens_padded != self.pad_id).astype(np.int32)
         return tokens_padded, mask
 
     def _unpad(self, tokens: ak.Array):
@@ -109,6 +113,7 @@ class Tokenizer:
     ) -> dict[str, np.ndarray]:
         # encoding is jagged
         tokens = ak.Array(self.tokenizer.encode_ordinary_batch(batch))
+        sequence_lengths = ak.num(tokens, axis=1).tolist()
         # manually add bos/eos tokens
         if use_bos:
             tokens = ak.concatenate(
@@ -121,7 +126,7 @@ class Tokenizer:
 
         input_ids = None
         attention_mask = None
-        sequence_ids = None # only if packing
+        sequence_ids = None  # only if packing
         if collate_strategy == "pack":
             # pack into batches of max_length, throw away the leftovers
             sequence_ids = ak.zeros_like(tokens) + range(len(tokens))
@@ -135,7 +140,7 @@ class Tokenizer:
             )
         elif collate_strategy in ["max_length", "longest"]:
             if collate_strategy == "longest":
-                longest = max(len(t) for t in tokens) # pyright: ignore
+                longest = max(len(t) for t in tokens)  # pyright: ignore
                 max_length = min(longest, max_length)
 
             # keep sequences separate; pad or truncate to max_length
@@ -153,17 +158,13 @@ class Tokenizer:
         else:
             raise ValueError(f"Invalid collate strategy {collate_strategy}")
 
-        return { # pyright: ignore
+        return {  # pyright: ignore
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "sequence_ids": sequence_ids,
             "sequence_lengths": sequence_lengths,
         }
 
-
     def decode_batch(self, batch: Union[np.ndarray, list]) -> list[str]:
         tokens = self._unpad(ak.Array(np.array(batch))).tolist()
-        if self.model_type == "sentencepiece":
-            return self.tokenizer.decode(tokens)
-        else:
-            return self.tokenizer.batch_decode(tokens)
+        return self.tokenizer.decode_batch(tokens)

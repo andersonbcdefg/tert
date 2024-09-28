@@ -3,7 +3,11 @@
 import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
-
+from torch.nn.attention.flex_attention import (
+    flex_attention,
+    create_block_mask,
+    BlockMask,
+)
 
 class IndexFirstAxis(torch.autograd.Function):
     @staticmethod
@@ -15,7 +19,9 @@ class IndexFirstAxis(torch.autograd.Function):
         # TD [2022-03-04] For some reason torch.gather is a bit faster than indexing.
         # return input[indices]
         return torch.gather(
-            rearrange(input, "b ... -> b (...)"), 0, repeat(indices, "z -> z d", d=second_dim)
+            rearrange(input, "b ... -> b (...)"),
+            0,
+            repeat(indices, "z -> z d", d=second_dim),
         ).reshape(-1, *other_shape)
 
     @staticmethod
@@ -31,7 +37,9 @@ class IndexFirstAxis(torch.autograd.Function):
         )
         # TD [2022-03-04] For some reason torch.scatter is a bit faster than indexing.
         # grad_input[indices] = grad_output
-        grad_input.scatter_(0, repeat(indices, "z -> z d", d=grad_output.shape[1]), grad_output)
+        grad_input.scatter_(
+            0, repeat(indices, "z -> z d", d=grad_output.shape[1]), grad_output
+        )
         return grad_input.reshape(ctx.first_axis_dim, *other_shape), None
 
 
@@ -109,7 +117,9 @@ def unpad_input(hidden_states, attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
     max_seqlen_in_batch = seqlens_in_batch.max().item()
-    cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.torch.int32), (1, 0))
+    cu_seqlens = F.pad(
+        torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.torch.int32), (1, 0)
+    )
     # TD [2022-03-04] We don't want to index with a bool mask, because Pytorch will expand the
     # bool mask, then call nonzero to get the indices, then index with those. The indices is @dim
     # times larger than it needs to be, wasting memory. It's faster and more memory-efficient to
@@ -121,6 +131,7 @@ def unpad_input(hidden_states, attention_mask):
         cu_seqlens,
         max_seqlen_in_batch,
     )
+
 
 def pad_input(hidden_states, indices, batch, seqlen):
     """
@@ -138,6 +149,7 @@ def pad_input(hidden_states, indices, batch, seqlen):
     output = index_put_first_axis(hidden_states, indices, batch * seqlen)
     return rearrange(output, "(b s) ... -> b s ...", b=batch)
 
+
 def document_ids_from_cu_seqlens(cu_seqlens):
     """
     Creates a list of document IDs based on cumulative sequence lengths.
@@ -153,8 +165,37 @@ def document_ids_from_cu_seqlens(cu_seqlens):
 
     # Create document IDs by repeating indices according to sequence lengths
     document_ids = torch.repeat_interleave(
-        torch.arange(len(seqlens), device=cu_seqlens.device),
-        seqlens
+        torch.arange(len(seqlens), device=cu_seqlens.device), seqlens
     )
 
     return document_ids
+
+
+def get_block_mask(attention_mask) -> BlockMask:
+    # get cumulative seq lens from attention mask
+    seqlens = attention_mask.sum(dim=-1, dtype=torch.int32)
+    cu_seqlens = torch.cumsum(seqlens, dim=0, dtype=torch.int32)
+    cu_seqlens = torch.cat(
+        [torch.zeros(1, dtype=torch.int32, device=cu_seqlens.device), cu_seqlens]
+    )
+    total_seq_len = int(cu_seqlens[-1].item())
+    doc_ids = document_ids_from_cu_seqlens(cu_seqlens)
+    # print("doc ids:", doc_ids)
+
+    # compute block mask once for the whole forward pass
+    def doc_mask_mod(b, h, q_idx, kv_idx):
+        return (
+            doc_ids[q_idx.clamp(0, total_seq_len - 1)]
+            == doc_ids[kv_idx.clamp(0, total_seq_len - 1)]
+        )
+
+    block_mask = create_block_mask(
+        mask_mod=doc_mask_mod,
+        B=None,
+        H=None,
+        Q_LEN=total_seq_len,
+        KV_LEN=total_seq_len,
+        device=attention_mask.device,
+        # _compile=True,
+    )
+    return block_mask
