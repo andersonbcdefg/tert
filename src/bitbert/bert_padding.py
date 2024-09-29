@@ -163,10 +163,13 @@ def document_ids_from_cu_seqlens(cu_seqlens):
     # Calculate the sequence lengths
     seqlens = cu_seqlens[1:] - cu_seqlens[:-1]
 
-    # Create document IDs by repeating indices according to sequence lengths
+    # Create document IDs by repeating indices according to sequence lengths, padding to 128
+    # reason to pad: then create_block_mask doesn't have to know max_seq_len, so we don't
+    # have to re-compile all the time
     document_ids = torch.repeat_interleave(
         torch.arange(len(seqlens), device=cu_seqlens.device), seqlens
     )
+    document_ids = F.pad(document_ids, (0, 128 - (document_ids.shape[0] % 128)))
 
     return document_ids
 
@@ -184,10 +187,7 @@ def get_block_mask(attention_mask) -> BlockMask:
 
     # compute block mask once for the whole forward pass
     def doc_mask_mod(b, h, q_idx, kv_idx):
-        return (
-            doc_ids[q_idx.clamp(0, total_seq_len - 1)]
-            == doc_ids[kv_idx.clamp(0, total_seq_len - 1)]
-        )
+        return doc_ids[q_idx] == doc_ids[kv_idx]
 
     block_mask = create_block_mask(
         mask_mod=doc_mask_mod,

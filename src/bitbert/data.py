@@ -2,7 +2,7 @@ import torch
 import datasets
 from functools import partial
 from torch.utils.data import DataLoader
-
+from .tokenizer import Tokenizer
 
 def send_to_device(batch, device):
     for k, v in batch.items():
@@ -11,9 +11,11 @@ def send_to_device(batch, device):
     return batch
 
 
-def collate_fn(batch, tokenizer, device="cuda"):
-    tokenized = tokenizer(
-        [x["text"] for x in batch], max_length=512, collate_strategy="longest"
+def collate_fn(batch, tokenizer: Tokenizer, max_length):
+    tokenized = tokenizer.encode_batch(
+        [x["text"] for x in batch],
+        max_length=max_length,
+        collate_strategy="longest"
     )
     tokenized["input_ids"] = torch.tensor(tokenized["input_ids"], dtype=torch.long)
     tokenized["attention_mask"] = torch.tensor(
@@ -39,12 +41,54 @@ def collate_fn(batch, tokenizer, device="cuda"):
 
     tokenized["labels"] = labels
 
-    return send_to_device(tokenized, device)
+    return tokenized
 
 
-def get_dataloader(batch_size: int = 32, tokenizer=None):
+def get_fw_dataloader(
+    batch_size: int = 32,
+    max_length=512,
+    tokenizer=None
+):
+    NUM_SAMPLES = 9_672_200
+    ds = datasets.load_dataset(
+        "HuggingFaceFW/fineweb-edu",
+        "sample-10BT",
+        split="train",
+        streaming=True
+    )
+    dataloader = DataLoader(
+        ds,
+        batch_size=batch_size,
+        collate_fn=partial(collate_fn, tokenizer=tokenizer, max_length=max_length),
+        num_workers=1
+    )
+    return dataloader, NUM_SAMPLES
+
+
+def get_wiki_dataloader(
+    batch_size: int = 32,
+    max_length=512,
+    tokenizer=None
+):
     ds = datasets.load_dataset("pszemraj/simple_wikipedia", split="train")
     dataloader = DataLoader(
-        ds, batch_size=batch_size, collate_fn=partial(collate_fn, tokenizer=tokenizer)
+        ds,
+        batch_size=batch_size,
+        collate_fn=partial(collate_fn, tokenizer=tokenizer, max_length=max_length),
+        num_workers=1
     )
-    return dataloader
+    return dataloader, 226_000
+
+def get_tinystories_dataloader(
+    batch_size: int = 32,
+    max_length=512,
+    tokenizer=None
+):
+    ds = datasets.load_dataset("roneneldan/TinyStories", split="train")
+    dataloader = DataLoader(
+        ds,
+        batch_size=batch_size,
+        collate_fn=partial(collate_fn, tokenizer=tokenizer, max_length=max_length),
+        num_workers=1
+    )
+    return dataloader, 2_120_000

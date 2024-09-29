@@ -17,6 +17,11 @@ from .bert_padding import (
 from typing import Any
 from transformers.models.bert.modeling_bert import BertAttention as HFBertAttention
 from transformers import BertConfig
+try:
+    from liger_kernel.transformers.rms_norm import LigerRMSNorm as RMSNorm
+except ImportError:
+    print("liger kernel not available, falling back on pytorch RMSNorm")
+    from torch.nn import RMSNorm
 
 config = BertConfig.from_pretrained("bert-base-uncased")
 
@@ -118,7 +123,7 @@ def apply_rotary_emb(
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
-# @torch.compile
+@torch.compile
 def activation_quant(x):
     """Per−token quantization to 8 bits. No grouping is needed for quantization.
     Args:
@@ -131,7 +136,7 @@ def activation_quant(x):
     return y
 
 
-# @torch.compile
+@torch.compile
 def weight_quant(w):
     """Per−tensor quantization to 1.58 bits. No grouping is needed for quantization.
     Args:
@@ -154,6 +159,7 @@ class BitLinear(nn.Linear):
 
         # initialize self with small weights
         nn.init.trunc_normal_(self.weight, std=0.002)
+        self.norm = RMSNorm(in_features, eps=1e-6)
 
     def forward(self, input):
         """
@@ -164,7 +170,7 @@ class BitLinear(nn.Linear):
         """
         d = input.shape[-1]
         w = self.weight  # a weight tensor with shape [d, k]
-        x_norm = F.rms_norm(input, normalized_shape=[d])
+        x_norm = self.norm(input)
         # A trick for implementing Straight−Through−Estimator (STE) using detach()
         x_quant = x_norm + (activation_quant(x_norm) - x_norm).detach()
         # print("x", x_quant)
@@ -297,22 +303,17 @@ class BertBlock(nn.Module):
 
     def __init__(self, args: ModelArgs, use_flex_attention: bool = False):
         super().__init__()
-        self.norm1 = nn.RMSNorm(
-            normalized_shape=[args.d_model], elementwise_affine=True
-        )
+        self.norm1 = RMSNorm(args.d_model)
         self.attention = BertSelfAttention(
             args.d_model, args.n_heads, use_flex_attention
         )
-        self.norm2 = nn.RMSNorm(
-            normalized_shape=[args.d_model], elementwise_affine=True
-        )
+        self.norm2 = RMSNorm(args.d_model)
         self.mlp = BertMLP(args.d_model, 3 * args.d_model)
 
     def forward(self, x, mask, freqs_cis):
         x = x + self.attention(self.norm1(x), mask, freqs_cis)
         x = x + self.mlp(self.norm2(x))
         return x
-
 
 class BitBertBlock(nn.Module):
     """
@@ -340,7 +341,7 @@ class Model(nn.Module):
         args: ModelArgs,
         max_seq_len: int = 512,
         max_batch_size: int = 1024,
-        use_flex_attention: bool = False,
+        use_flex_attention: bool = True,
     ):
         super().__init__()
         self.tok_embeddings = nn.Embedding(args.n_vocab, args.d_model)
