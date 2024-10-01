@@ -80,6 +80,9 @@ class Tokenizer:
     def mask_id(self) -> int:
         return special_tokens[MASK]
 
+    def sep_id(self) -> int:
+        return special_tokens[SEP]
+
     def __call__(self, t: Union[str, list[str]], **kwargs) -> np.ndarray:
         if isinstance(t, str):
             t = [t]
@@ -164,6 +167,49 @@ class Tokenizer:
             "sequence_ids": sequence_ids,
             "sequence_lengths": sequence_lengths,
         }
+
+    def encode_batch_pairs(
+        self,
+        batch: list[tuple[str, str]],
+        max_length: int,
+        truncation_strategy: Literal["longest_first", "only_first", "only_second", "do_not_truncate"] = "longest_first",
+        use_bos: bool = True,
+        use_eos: bool = True,
+        eos_after_truncation: bool = True,
+    ):
+        """
+        Encodes a batch of pairs, separated by SEP token.
+        """
+        sentences1 = [x[0] for x in batch]
+        sentences2 = [x[1] for x in batch]
+
+        tokens1 = ak.Array(self.tokenizer.encode_ordinary_batch(sentences1))
+        tokens2 = ak.Array(self.tokenizer.encode_ordinary_batch(sentences2))
+        sequence_lengths1 = ak.num(tokens1, axis=1).tolist()
+        sequence_lengths2 = ak.num(tokens2, axis=1).tolist()
+
+        # if bos, concatenate to front of tokens1
+        if use_bos:
+            tokens1 = ak.concatenate(
+                [ak.full_like(tokens1[:, :1], self.bos_id), tokens1], axis=1
+            )
+
+        # concatenate sep to end of tokens1
+        tokens1 = ak.concatenate(
+            [tokens1, ak.full_like(tokens1[:, :1], self.sep_id)], axis=1
+        )
+
+        # concatenate tokens2 to the end of tokens1
+        tokens1 = ak.concatenate([tokens1, tokens2], axis=1)
+
+        if use_eos:
+            tokens1 = ak.concatenate(
+                [tokens1, ak.full_like(tokens1[:, :1], self.eos_id)], axis=1
+            )
+
+        # for fine-tuning with pairs, always pad to max length
+
+
 
     def decode_batch(self, batch: Union[np.ndarray, list]) -> list[str]:
         tokens = self._unpad(ak.Array(np.array(batch))).tolist()

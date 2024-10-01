@@ -58,7 +58,7 @@ def train():
     print(torch.__version__)
     print("Training begins!")
     args = ModelArgs()
-    block_type = BertBlock
+    block_type = BitBertBlock
     dataset = "fineweb"
     epochs = 1
     model = Model(block_type, args, max_seq_len=512)

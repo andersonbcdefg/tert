@@ -19,9 +19,11 @@ from transformers.models.bert.modeling_bert import BertAttention as HFBertAttent
 from transformers import BertConfig
 try:
     from liger_kernel.transformers.rms_norm import LigerRMSNorm as RMSNorm
+    from liger_kernel.transformers.functional import liger_cross_entropy as cross_entropy
 except ImportError:
     print("liger kernel not available, falling back on pytorch RMSNorm")
     from torch.nn import RMSNorm
+    cross_entropy = None
 
 config = BertConfig.from_pretrained("bert-base-uncased")
 
@@ -358,7 +360,13 @@ class Model(nn.Module):
             ),
         )
 
-    def forward(self, input_ids, attention_mask, apply_lm_head: bool = True):
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        labels=None,
+        apply_lm_head: bool = False
+    ):
         orig_batch_size, orig_max_seqlen = input_ids.shape
 
         hidden_states = self.tok_embeddings(input_ids)  # 1, total_tokens, d_model
@@ -379,7 +387,33 @@ class Model(nn.Module):
         for i, layer in enumerate(self.layers):
             # print(f"layer {i}")
             hidden_states = layer(hidden_states, mask, freqs_cis)
-        hidden_states = self.norm(hidden_states)
+        hidden_states = self.norm(hidden_states) # (total_tokens, d_model) or (batch, seq_len, d_model)
+
+        # if labels present, compute loss
+        if labels is not None:
+            if self.use_flex_attention:
+                hidden_states_flat = hidden_states.view(-1, hidden_states.shape[-1]) # (total_tokens, d_model)
+                labels_flat = labels[attention_mask.bool()].view(-1) # (total_tokens)
+
+                # only do lm_head on tokens that will be predicted
+                hidden_states_to_predict = hidden_states_flat[labels_flat != -100]
+                labels_to_predict = labels_flat[labels_flat != -100]
+            else:
+                hidden_states_flat = hidden_states.view(-1, hidden_states.shape[-1]) # (bsz x seqlen, d_model)
+                labels_flat = labels.view(-1) # (bsz x seqlen)
+
+                # only do lm_head on tokens that will be predicted. we already ensure padding tokens are never targets
+                hidden_states_to_predict = hidden_states_flat[labels_flat != -100]
+                labels_to_predict = labels_flat[labels_flat != -100]
+
+            output = self.output(hidden_states_to_predict)
+            loss = cross_entropy( # pyright: ignore
+                output,
+                labels_to_predict,
+                -100, 0.0, 'mean'
+            )
+            return loss
+
 
         # dont forget to add sparse token prediction (Only predict MASK tokens during training)
         if apply_lm_head:
@@ -388,6 +422,7 @@ class Model(nn.Module):
             output = hidden_states
 
         # pad output
+        print("output shape", output.shape)
         if self.use_flex_attention:
-            output = pad_input(output, indices, orig_batch_size, orig_max_seqlen)
+            output = pad_input(output, indices, orig_batch_size, orig_max_seqlen) # pyright: ignore
         return output
