@@ -80,6 +80,7 @@ class Tokenizer:
     def mask_id(self) -> int:
         return special_tokens[MASK]
 
+    @property
     def sep_id(self) -> int:
         return special_tokens[SEP]
 
@@ -170,9 +171,10 @@ class Tokenizer:
 
     def encode_batch_pairs(
         self,
-        batch: list[tuple[str, str]],
+        sentence1s: list[str],
+        sentence2s: list[str] | list[None],
         max_length: int,
-        truncation_strategy: Literal["longest_first", "only_first", "only_second", "do_not_truncate"] = "longest_first",
+        truncation_strategy: Literal["longest_first"] = "longest_first", # do other ones later if we actually need them
         use_bos: bool = True,
         use_eos: bool = True,
         eos_after_truncation: bool = True,
@@ -180,37 +182,111 @@ class Tokenizer:
         """
         Encodes a batch of pairs, separated by SEP token.
         """
-        sentences1 = [x[0] for x in batch]
-        sentences2 = [x[1] for x in batch]
-
-        tokens1 = ak.Array(self.tokenizer.encode_ordinary_batch(sentences1))
-        tokens2 = ak.Array(self.tokenizer.encode_ordinary_batch(sentences2))
+        # if we're doing a dataset that actually doesn't have sentence2s, just use encode_batch
+        if any([x is None for x in sentence2s]):
+            return self.encode_batch(
+                sentence1s, max_length, 'longest', use_bos, use_eos, eos_after_truncation
+            )
+        assert len(sentence1s) == len(sentence2s), "sentence1s and sentence2s must be the same length"
+        tokens1 = ak.Array(self.tokenizer.encode_ordinary_batch(sentence1s))
+        tokens2 = ak.Array(self.tokenizer.encode_ordinary_batch(sentence2s)) # pyright: ignore
+        print(tokens1.type.show())
         sequence_lengths1 = ak.num(tokens1, axis=1).tolist()
         sequence_lengths2 = ak.num(tokens2, axis=1).tolist()
+        print(sequence_lengths1, sequence_lengths2)
+        available_length = max_length - 3
 
-        # if bos, concatenate to front of tokens1
+        def calc_truncation(len1: int, len2: int, available_length: int):
+            ### implement logic here
+            if available_length < 0:
+                raise ValueError("available_length must be non-negative.")
+
+            combined_length = len1 + len2
+            overflow = combined_length - available_length
+            length_diff = abs(len1 - len2)
+
+            if overflow <= 0:
+                return len1, len2
+            trunc_longer = min(length_diff, overflow)
+            remaining_overflow = overflow - trunc_longer
+            trunc_both = remaining_overflow // 2 if remaining_overflow % 2 == 0 else (remaining_overflow // 2) + 1
+
+            if len1 > len2:
+                num_to_truncate1 = trunc_longer + trunc_both
+                num_to_truncate2 = trunc_both
+            else:
+                num_to_truncate1 = trunc_both
+                num_to_truncate2 = trunc_longer + trunc_both
+
+            return len1 - num_to_truncate1, len2 - num_to_truncate2
+
+        new_lens1, new_lens2 = zip(*[
+            calc_truncation(len1, len2, available_length)
+            for len1, len2 in zip(sequence_lengths1, sequence_lengths2)
+        ])
+        print(new_lens1, new_lens2)
+        tokens1 = tokens1.tolist()
+        tokens2 = tokens2.tolist()
+        # print(tokens1, tokens2)
+        for i, (len1, len2) in enumerate(zip(new_lens1, new_lens2)):
+            tokens1[i] = tokens1[i][:len1]
+            tokens2[i] = tokens2[i][:len2]
+        tokens1 = ak.Array(tokens1)
+        print(tokens1.type.show())
+        tokens2 = ak.Array(tokens2)
+        print("tokens", tokens1, tokens2)
+        # combine with sep token between
+        # print("tokens1 shape:", tokens1.type.show())
+        # print("tokens2 shape:", tokens2.type.show())
+        sep = ak.full_like(tokens1[:, :1], self.sep_id)
+        # print("sep shape:", sep.type.show())
+        tokens = ak.concatenate([
+            tokens1,
+            sep,
+            tokens2
+        ], axis=1)
+
+        print("concatenated with sep type:")
+        tokens.type.show()
+
         if use_bos:
-            tokens1 = ak.concatenate(
-                [ak.full_like(tokens1[:, :1], self.bos_id), tokens1], axis=1
-            )
-
-        # concatenate sep to end of tokens1
-        tokens1 = ak.concatenate(
-            [tokens1, ak.full_like(tokens1[:, :1], self.sep_id)], axis=1
-        )
-
-        # concatenate tokens2 to the end of tokens1
-        tokens1 = ak.concatenate([tokens1, tokens2], axis=1)
-
+            tokens = ak.concatenate([
+                ak.full_like(tokens1[:, :1], self.bos_id),
+                tokens
+            ], axis=1)
+            print("concatenated with bos type:")
+            tokens.type.show()
         if use_eos:
-            tokens1 = ak.concatenate(
-                [tokens1, ak.full_like(tokens1[:, :1], self.eos_id)], axis=1
-            )
+            tokens = ak.concatenate([
+                tokens,
+                ak.full_like(tokens1[:, :1], self.eos_id)
+            ], axis=1)
+            print("concatenated with bos type:")
+            tokens.type.show()
 
-        # for fine-tuning with pairs, always pad to max length
+        # for fine-tuning with pairs, always pad to longest sequence length
+        print("tokens", tokens.tolist())
+        pad_length = max(ak.num(tokens, axis=1).tolist())
+        print("pad length:", pad_length)
+        input_ids, attention_mask = self._pad(tokens, pad_length)
+        input_ids = np.where(input_ids == -1, self.eos_id, input_ids)
 
+        return {
+            "input_ids": input_ids.tolist(),
+            "attention_mask": attention_mask
+        }
 
 
     def decode_batch(self, batch: Union[np.ndarray, list]) -> list[str]:
         tokens = self._unpad(ak.Array(np.array(batch))).tolist()
         return self.tokenizer.decode_batch(tokens)
+
+
+FAKE_SENTENCE_PAIRS = [
+    ("This is a sentence.", "This is another sentence."),
+    ("This is a sentence.", "This is another sentence."),
+    ("And this is a sentence.", "And this is another sentence."),
+    ("And this is a sentence.", "And this is another sentence."),
+    ("A sentence.", "Another sentence."),
+    ("A sentence.", "Another sentence."),
+]

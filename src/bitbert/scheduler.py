@@ -1,7 +1,12 @@
 import torch
 
 def get_wsd_scheduler(
-    optimizer, total_steps, warmup_frac=0.05, decay_frac=0.1
+    optimizer,
+    total_steps,
+    warmup_frac=0.05,
+    decay_frac=0.1,
+    initial_lr_scale=0.1,
+    final_lr_scale=0.0 # decay to 0
 ):
     warmup_steps = total_steps * warmup_frac
     decay_steps = total_steps * decay_frac
@@ -9,13 +14,19 @@ def get_wsd_scheduler(
     def lr_lambda(step):
         # warmup
         if step < warmup_steps:
-            return step / warmup_steps
+            # interpolate between initial_lr_scale and 1.0
+            alpha = step / warmup_steps # alpha is the weight of the 1.0 term
+            return alpha * 1.0 + (1.0 - alpha) * initial_lr_scale
         # stable
         elif step < total_steps - decay_steps:
             return 1.0
         else:
             steps_remaining = total_steps - step
-            return max(steps_remaining / decay_steps, 0.0)
+            steps_remaining = max(steps_remaining, 0)
+            # interpolate between 1.0 and final_lr_scale
+            alpha = steps_remaining / decay_steps # alpha is weight of the 1.0 term
+            return alpha * 1.0 + (1.0 - alpha) * final_lr_scale
+
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 def get_one_cycle_scheduler(

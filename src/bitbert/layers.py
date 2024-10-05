@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,7 +20,10 @@ from transformers.models.bert.modeling_bert import BertAttention as HFBertAttent
 from transformers import BertConfig
 try:
     from liger_kernel.transformers.rms_norm import LigerRMSNorm as RMSNorm
-    from liger_kernel.transformers.functional import liger_cross_entropy as cross_entropy
+    from liger_kernel.transformers.functional import (
+        liger_cross_entropy as cross_entropy,
+        liger_swiglu as swiglu_mul_kernel
+    )
 except ImportError:
     print("liger kernel not available, falling back on pytorch RMSNorm")
     from torch.nn import RMSNorm
@@ -157,6 +161,8 @@ class BitLinear(nn.Linear):
     """
 
     def __init__(self, in_features, out_features, bias=False):
+        if bias:
+            raise ValueError("bias not supported")
         super().__init__(in_features, out_features, bias=bias)
 
         # initialize self with small weights
@@ -192,10 +198,17 @@ class BertMLP(nn.Module):
         nn.init.trunc_normal_(self.linear_in.weight, std=0.002)
         nn.init.trunc_normal_(self.linear_out.weight, std=0.002)
 
-    def forward(self, x):
+    def forward(self, x, dropout_p: float = 0.0):
         up, gate = self.linear_in(x).chunk(2, dim=-1)
-        x = F.silu(gate) * up
-        return self.linear_out(x)
+        up = F.dropout(up, dropout_p, training=self.training)
+        # x = F.silu(gate) * up
+        # return self.linear_out(x)
+        return F.dropout( # residual dropout
+            # swiglu kernel handles the silu + multiplication
+            self.linear_out(swiglu_mul_kernel(gate, up)), # pyright: ignore
+            dropout_p,
+            training=self.training
+        )
 
 
 class BitBertMLP(nn.Module):
@@ -203,14 +216,21 @@ class BitBertMLP(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.hidden_dim = hidden_dim
-        self.linear_in = BitLinear(d_model, 2 * hidden_dim)
-        self.linear_out = BitLinear(hidden_dim, d_model)
+        self.linear_in = BitLinear(d_model, 2 * hidden_dim, bias=False)
+        self.linear_out = BitLinear(hidden_dim, d_model, bias=False)
 
-    def forward(self, x):
+    def forward(self, x, dropout_p: float = 0.0):
         up, gate = self.linear_in(x).chunk(2, dim=-1)
-        x = F.silu(gate) * up
-        return self.linear_out(x)
-
+        up = F.dropout(up, dropout_p, training=self.training)
+        # x = F.silu(gate) * up
+        # return self.linear_out(x)
+        # swiglu kernel handles the silu + multiplication
+        return F.dropout( # residual dropout
+            # swiglu kernel handles the silu + multiplication
+            self.linear_out(swiglu_mul_kernel(gate, up)), # pyright: ignore
+            dropout_p,
+            training=self.training
+        )
 
 class BertSelfAttention(nn.Module):
     """
@@ -229,7 +249,8 @@ class BertSelfAttention(nn.Module):
         nn.init.trunc_normal_(self.qkv.weight, std=0.002)
         nn.init.trunc_normal_(self.o.weight, std=0.002)
 
-    def forward(self, hidden_states, mask: BlockMask | torch.Tensor, freqs_cis):
+    def forward(self, hidden_states, mask: BlockMask | torch.Tensor, freqs_cis, dropout_p: float = 0.0):
+        # we don't use dropout in attention because it's not an arg for flexattention
         xq, xk, xv = self.qkv(hidden_states).chunk(3, dim=-1)  # [total_tokens, d_model]
         B, L, D = xq.shape  # unpadded, but we unsqueezed batch dim to be 1
         # split heads, but don't transpose until after rotary emb
@@ -253,7 +274,11 @@ class BertSelfAttention(nn.Module):
                 # attn_mask=mask.bool().unsqueeze(1).unsqueeze(3).clone() # pyright:ignore
             ).to(input_dtype)
         attn_out = attn_out.transpose(1, 2).flatten(2)  # pyright:ignore
-        return self.o(attn_out)
+        return F.dropout( # residual dropout
+            self.o(attn_out),
+            dropout_p,
+            training=self.training
+        )
 
 
 class BitBertSelfAttention(nn.Module):
@@ -295,7 +320,11 @@ class BitBertSelfAttention(nn.Module):
                 attn_mask=mask.bool().unsqueeze(1).unsqueeze(3),  # pyright:ignore
             )
         attn_out = attn_out.transpose(1, 2).flatten(2)  # pyright:ignore
-        return self.o(attn_out)
+        return F.dropout( # residual dropout
+            self.o(attn_out),
+            dropout_p,
+            training=self.training
+        )
 
 
 class BertBlock(nn.Module):
@@ -312,9 +341,9 @@ class BertBlock(nn.Module):
         self.norm2 = RMSNorm(args.d_model)
         self.mlp = BertMLP(args.d_model, 3 * args.d_model)
 
-    def forward(self, x, mask, freqs_cis):
-        x = x + self.attention(self.norm1(x), mask, freqs_cis)
-        x = x + self.mlp(self.norm2(x))
+    def forward(self, x, mask, freqs_cis, dropout_p: float = 0.0):
+        x = x + self.attention(self.norm1(x), mask, freqs_cis, dropout_p=dropout_p)
+        x = x + self.mlp(self.norm2(x), dropout_p=dropout_p)
         return x
 
 class BitBertBlock(nn.Module):
@@ -331,10 +360,9 @@ class BitBertBlock(nn.Module):
         self.mlp = BitBertMLP(args.d_model, 3 * args.d_model)
 
     def forward(self, x, mask: BlockMask | torch.Tensor, freqs_cis):
-        x = x + self.attention(x, mask, freqs_cis)
-        x = x + self.mlp(x)
+        x = x + self.attention(self.norm1(x), mask, freqs_cis, dropout_p=dropout_p)
+        x = x + self.mlp(self.norm2(x), dropout_p=dropout_p)
         return x
-
 
 class Model(nn.Module):
     def __init__(
@@ -346,6 +374,7 @@ class Model(nn.Module):
         use_flex_attention: bool = True,
     ):
         super().__init__()
+        self.args = args
         self.tok_embeddings = nn.Embedding(args.n_vocab, args.d_model)
         self.layers = nn.ModuleList(
             [block_class(args, use_flex_attention) for _ in range(args.n_layers)]
@@ -365,11 +394,12 @@ class Model(nn.Module):
         input_ids,
         attention_mask,
         labels=None,
-        apply_lm_head: bool = False
+        apply_lm_head: bool = False,
+        dropout_p: float = 0.0
     ):
         orig_batch_size, orig_max_seqlen = input_ids.shape
-
         hidden_states = self.tok_embeddings(input_ids)  # 1, total_tokens, d_model
+        hidden_states = F.dropout(hidden_states, dropout_p, training=self.training)
         # print("hidden states dtype", hidden_states.dtype)
         # NOW unpad (it expects it to already have a hidden dim)
         if self.use_flex_attention:
@@ -386,7 +416,7 @@ class Model(nn.Module):
         freqs_cis = self.freqs_cis[:total_seq_len, :]
         for i, layer in enumerate(self.layers):
             # print(f"layer {i}")
-            hidden_states = layer(hidden_states, mask, freqs_cis)
+            hidden_states = layer(hidden_states, mask, freqs_cis, dropout_p=dropout_p)
         hidden_states = self.norm(hidden_states) # (total_tokens, d_model) or (batch, seq_len, d_model)
 
         # if labels present, compute loss
@@ -414,15 +444,13 @@ class Model(nn.Module):
             )
             return loss
 
-
-        # dont forget to add sparse token prediction (Only predict MASK tokens during training)
-        if apply_lm_head:
-            output = self.output(hidden_states).squeeze(0)  # (total_tokens, vocab_size)
+        elif apply_lm_head:
+            output = self.output(hidden_states)  # (total_tokens, vocab_size)
         else:
             output = hidden_states
 
         # pad output
-        print("output shape", output.shape)
         if self.use_flex_attention:
-            output = pad_input(output, indices, orig_batch_size, orig_max_seqlen) # pyright: ignore
+            return pad_input(output.squeeze(0), indices, orig_batch_size, orig_max_seqlen) # pyright: ignore
+
         return output
