@@ -64,42 +64,35 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
     return freqs_cis
 
+def compute_position_ids(attention_mask: torch.Tensor):
+    seq_lengths = attention_mask.sum(dim=-1)
+    # Compute position IDs for each document
+    position_ids_list = [
+        torch.arange(length.item(), device=attention_mask.device)
+        for length in seq_lengths
+    ]
+    position_ids = torch.cat(position_ids_list, dim=0)  # (total_valid_tokens,)
 
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-    """
-    From meta llama: https://github.com/meta-llama/llama/blob/main/llama/model.py
+    return position_ids
 
-    Reshape frequency tensor for broadcasting it with another tensor.
+def compute_rotation_tensor(
+    freqs_cis: torch.Tensor, # max_L x D
+    position_ids: torch.Tensor
+):
+    assert position_ids.ndim == 1, "position_ids must be a 1D tensor"
+    concat_seq_len = position_ids.shape[0]
+    # first, use position ids to slice freqs_cis
+    rotation_tensor = freqs_cis[position_ids, :].to(position_ids.device) # packed_L x D
+    # then, reshape to (1, L, 1, D)
+    rotation_tensor = rotation_tensor.view(1, concat_seq_len, 1, freqs_cis.shape[-1])
 
-    This function reshapes the frequency tensor to have the same shape as the target tensor 'x'
-    for the purpose of broadcasting the frequency tensor during element-wise operations.
-
-    Args:
-        freqs_cis (torch.Tensor): Frequency tensor to be reshaped.
-        x (torch.Tensor): Target tensor for broadcasting compatibility.
-
-    Returns:
-        torch.Tensor: Reshaped frequency tensor.
-
-    Raises:
-        AssertionError: If the frequency tensor doesn't match the expected shape.
-        AssertionError: If the target tensor 'x' doesn't have the expected number of dimensions.
-    """
-    ndim = x.ndim
-    assert 0 <= 1 < ndim, "x must have at least 2 dimensions"
-    # make sure freqs_cis is L x D
-    assert freqs_cis.shape == (
-        x.shape[1],
-        x.shape[-1],
-    ), f"freqs_cis shape {freqs_cis.shape}, x shape {x.shape}"
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    return freqs_cis.view(*shape)
+    return rotation_tensor
 
 
 def apply_rotary_emb(
     xq: torch.Tensor,
     xk: torch.Tensor,
-    freqs_cis: torch.Tensor,
+    rotation_tensor: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     From meta llama: https://github.com/meta-llama/llama/blob/main/llama/model.py
@@ -121,11 +114,8 @@ def apply_rotary_emb(
     """
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    # should probably reset RoPE for each document in the concatenated sequence
-    # by using position_ids
-    freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    xq_out = torch.view_as_real(xq_ * rotation_tensor).flatten(3)
+    xk_out = torch.view_as_real(xk_ * rotation_tensor).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
@@ -169,6 +159,7 @@ class BitLinear(nn.Linear):
         nn.init.trunc_normal_(self.weight, std=0.002)
         self.norm = RMSNorm(in_features, eps=1e-6)
 
+    @torch.compile
     def forward(self, input):
         """
         Args:
@@ -198,6 +189,7 @@ class BertMLP(nn.Module):
         nn.init.trunc_normal_(self.linear_in.weight, std=0.002)
         nn.init.trunc_normal_(self.linear_out.weight, std=0.002)
 
+    @torch.compile
     def forward(self, x, dropout_p: float = 0.0):
         up, gate = self.linear_in(x).chunk(2, dim=-1)
         up = F.dropout(up, dropout_p, training=self.training)
@@ -249,15 +241,21 @@ class BertSelfAttention(nn.Module):
         nn.init.trunc_normal_(self.qkv.weight, std=0.002)
         nn.init.trunc_normal_(self.o.weight, std=0.002)
 
-    def forward(self, hidden_states, mask: BlockMask | torch.Tensor, freqs_cis, dropout_p: float = 0.0):
+    def forward(
+        self,
+        hidden_states,
+        mask: BlockMask | torch.Tensor,
+        rotation_tensor,
+        dropout_p: float = 0.0
+    ):
         # we don't use dropout in attention because it's not an arg for flexattention
         xq, xk, xv = self.qkv(hidden_states).chunk(3, dim=-1)  # [total_tokens, d_model]
         B, L, D = xq.shape  # unpadded, but we unsqueezed batch dim to be 1
         # split heads, but don't transpose until after rotary emb
         xq, xk, xv = map(
             lambda x: x.view(B, L, self.n_heads, D // self.n_heads), (xq, xk, xv)
-        )
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
+        ) # B, L, nH, D/nH
+        xq, xk = apply_rotary_emb(xq, xk, rotation_tensor)
         if self.use_flex_attention:
             attn_out = flex_attention(  # expects B, H, L, D
                 xq.transpose(1, 2).contiguous(),
@@ -296,14 +294,20 @@ class BitBertSelfAttention(nn.Module):
         self.o = BitLinear(d_model, d_model)
         self.use_flex_attention = use_flex_attention
 
-    def forward(self, hidden_states, mask: BlockMask | torch.Tensor, freqs_cis):
+    def forward(
+        self,
+        hidden_states,
+        mask: BlockMask | torch.Tensor,
+        rotation_tensor,
+        dropout_p: float=0.0
+    ):
         xq, xk, xv = self.qkv(hidden_states).chunk(3, dim=-1)  # [total_tokens, d_model]
         B, L, D = xq.shape  # unpadded, but we unsqueezed batch dim to be 1
         # split heads, but don't transpose until after rotary emb
         xq, xk, xv = map(
             lambda x: x.view(B, L, self.n_heads, D // self.n_heads), (xq, xk, xv)
         )
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
+        xq, xk = apply_rotary_emb(xq, xk, rotation_tensor)
         if self.use_flex_attention:
             attn_out = flex_attention(  # expects B, H, L, D
                 xq.transpose(1, 2),
@@ -341,8 +345,8 @@ class BertBlock(nn.Module):
         self.norm2 = RMSNorm(args.d_model)
         self.mlp = BertMLP(args.d_model, 3 * args.d_model)
 
-    def forward(self, x, mask, freqs_cis, dropout_p: float = 0.0):
-        x = x + self.attention(self.norm1(x), mask, freqs_cis, dropout_p=dropout_p)
+    def forward(self, x, mask, rotation_tensor, dropout_p: float = 0.0):
+        x = x + self.attention(self.norm1(x), mask, rotation_tensor, dropout_p=dropout_p)
         x = x + self.mlp(self.norm2(x), dropout_p=dropout_p)
         return x
 
@@ -359,9 +363,9 @@ class BitBertBlock(nn.Module):
         )
         self.mlp = BitBertMLP(args.d_model, 3 * args.d_model)
 
-    def forward(self, x, mask: BlockMask | torch.Tensor, freqs_cis):
-        x = x + self.attention(self.norm1(x), mask, freqs_cis, dropout_p=dropout_p)
-        x = x + self.mlp(self.norm2(x), dropout_p=dropout_p)
+    def forward(self, x, mask: BlockMask | torch.Tensor, freqs_cis, dropout_p: float = 0.0):
+        x = x + self.attention(x, mask, rotation_tensor, dropout_p=dropout_p)
+        x = x + self.mlp(x, dropout_p=dropout_p)
         return x
 
 class Model(nn.Module):
@@ -381,11 +385,12 @@ class Model(nn.Module):
         )
         self.norm = nn.RMSNorm(normalized_shape=[args.d_model], elementwise_affine=True)
         self.output = nn.Linear(args.d_model, args.n_vocab, bias=False)
+        # whether to flatten everything into one long sequence with masking
         self.use_flex_attention = use_flex_attention
         self.register_buffer(
             "freqs_cis",
             precompute_freqs_cis(
-                args.d_model // args.n_heads, end=max_seq_len * max_batch_size
+                args.d_model // args.n_heads, end=max_seq_len
             ),
         )
 
@@ -398,6 +403,16 @@ class Model(nn.Module):
         dropout_p: float = 0.0
     ):
         orig_batch_size, orig_max_seqlen = input_ids.shape
+        # calculate rotation tensor for all layers
+        if self.use_flex_attention:
+            position_ids = compute_position_ids(attention_mask)
+        else:
+            position_ids = torch.arange(orig_max_seqlen, device=input_ids.device)
+        rotation_tensor = compute_rotation_tensor(
+            self.freqs_cis,
+            position_ids
+        )
+
         hidden_states = self.tok_embeddings(input_ids)  # 1, total_tokens, d_model
         hidden_states = F.dropout(hidden_states, dropout_p, training=self.training)
         # print("hidden states dtype", hidden_states.dtype)
@@ -413,16 +428,18 @@ class Model(nn.Module):
         else:
             mask = attention_mask
         total_seq_len = hidden_states.shape[1]
-        freqs_cis = self.freqs_cis[:total_seq_len, :]
+        # freqs_cis = self.freqs_cis[:total_seq_len, :]
         for i, layer in enumerate(self.layers):
             # print(f"layer {i}")
-            hidden_states = layer(hidden_states, mask, freqs_cis, dropout_p=dropout_p)
+            hidden_states = layer(hidden_states, mask, rotation_tensor, dropout_p=dropout_p)
         hidden_states = self.norm(hidden_states) # (total_tokens, d_model) or (batch, seq_len, d_model)
 
         # if labels present, compute loss
         if labels is not None:
             if self.use_flex_attention:
                 hidden_states_flat = hidden_states.view(-1, hidden_states.shape[-1]) # (total_tokens, d_model)
+                # print("labels shape:", labels.shape)
+                # print("attention_mask shape:", attention_mask.shape)
                 labels_flat = labels[attention_mask.bool()].view(-1) # (total_tokens)
 
                 # only do lm_head on tokens that will be predicted

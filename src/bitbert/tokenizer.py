@@ -178,6 +178,7 @@ class Tokenizer:
         use_bos: bool = True,
         use_eos: bool = True,
         eos_after_truncation: bool = True,
+        padding_strategy: Literal["max_length", "longest", "jagged"] = "jagged"
     ):
         """
         Encodes a batch of pairs, separated by SEP token.
@@ -190,10 +191,10 @@ class Tokenizer:
         assert len(sentence1s) == len(sentence2s), "sentence1s and sentence2s must be the same length"
         tokens1 = ak.Array(self.tokenizer.encode_ordinary_batch(sentence1s))
         tokens2 = ak.Array(self.tokenizer.encode_ordinary_batch(sentence2s)) # pyright: ignore
-        print(tokens1.type.show())
+        # print(tokens1.type.show())
         sequence_lengths1 = ak.num(tokens1, axis=1).tolist()
         sequence_lengths2 = ak.num(tokens2, axis=1).tolist()
-        print(sequence_lengths1, sequence_lengths2)
+        # print(sequence_lengths1, sequence_lengths2)
         available_length = max_length - 3
 
         def calc_truncation(len1: int, len2: int, available_length: int):
@@ -224,7 +225,7 @@ class Tokenizer:
             calc_truncation(len1, len2, available_length)
             for len1, len2 in zip(sequence_lengths1, sequence_lengths2)
         ])
-        print(new_lens1, new_lens2)
+        # print(new_lens1, new_lens2)
         tokens1 = tokens1.tolist()
         tokens2 = tokens2.tolist()
         # print(tokens1, tokens2)
@@ -232,9 +233,9 @@ class Tokenizer:
             tokens1[i] = tokens1[i][:len1]
             tokens2[i] = tokens2[i][:len2]
         tokens1 = ak.Array(tokens1)
-        print(tokens1.type.show())
+        # print(tokens1.type.show())
         tokens2 = ak.Array(tokens2)
-        print("tokens", tokens1, tokens2)
+        # print("tokens", tokens1, tokens2)
         # combine with sep token between
         # print("tokens1 shape:", tokens1.type.show())
         # print("tokens2 shape:", tokens2.type.show())
@@ -246,36 +247,40 @@ class Tokenizer:
             tokens2
         ], axis=1)
 
-        print("concatenated with sep type:")
-        tokens.type.show()
+        # print("concatenated with sep type:")
+        # tokens.type.show()
 
         if use_bos:
             tokens = ak.concatenate([
                 ak.full_like(tokens1[:, :1], self.bos_id),
                 tokens
             ], axis=1)
-            print("concatenated with bos type:")
-            tokens.type.show()
+            # print("concatenated with bos type:")
+            # tokens.type.show()
         if use_eos:
             tokens = ak.concatenate([
                 tokens,
                 ak.full_like(tokens1[:, :1], self.eos_id)
             ], axis=1)
-            print("concatenated with bos type:")
-            tokens.type.show()
+            # print("concatenated with bos type:")
+            # tokens.type.show()
 
         # for fine-tuning with pairs, always pad to longest sequence length
-        print("tokens", tokens.tolist())
-        pad_length = max(ak.num(tokens, axis=1).tolist())
-        print("pad length:", pad_length)
-        input_ids, attention_mask = self._pad(tokens, pad_length)
-        input_ids = np.where(input_ids == -1, self.eos_id, input_ids)
+        # print("tokens", tokens.tolist())
+
+        # print("pad length:", pad_length)
+        if padding_strategy in ["max_length", "longest"]:
+            pad_length = max(ak.num(tokens, axis=1).tolist()) if padding_strategy == "max_length" else max_length
+            input_ids, attention_mask = self._pad(tokens, pad_length)
+            input_ids = np.where(input_ids == -1, self.eos_id, input_ids)
+        else:
+            input_ids = tokens
+            attention_mask = ak.ones_like(tokens)
 
         return {
             "input_ids": input_ids.tolist(),
-            "attention_mask": attention_mask
+            "attention_mask": attention_mask.tolist()
         }
-
 
     def decode_batch(self, batch: Union[np.ndarray, list]) -> list[str]:
         tokens = self._unpad(ak.Array(np.array(batch))).tolist()

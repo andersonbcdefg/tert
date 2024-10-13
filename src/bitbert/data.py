@@ -11,6 +11,9 @@ from typing import Any, Iterator
 from .tokenizer import Tokenizer
 from .glue import download_glue, load_task
 
+def dict_slice(d, start, end):
+    return {k: v[start:end] for k, v in d.items()}
+
 def send_to_device(batch, device):
     for k, v in batch.items():
         if isinstance(v, torch.Tensor):
@@ -170,17 +173,28 @@ def collate_fn(batch, tokenizer: Tokenizer, max_length):
     return tokenized
 
 def collate_fn_finetuning(
-    batch, tokenizer: Tokenizer, max_length
+    batch, tokenizer: Tokenizer | Any, max_length
 ):
     sentence1s, sentence2s, labels = zip(*batch)
-    tokenized = tokenizer.encode_batch_pairs(
-        sentence1s,
-        sentence2s,
-        max_length=max_length
-    )
-    tokenized['input_ids'] = torch.tensor(tokenized['input_ids'], dtype=torch.long)
-    tokenized['attention_mask'] = torch.tensor(tokenized['attention_mask'], dtype=torch.long)
-    tokenized['labels'] = torch.tensor(labels, dtype=torch.long)
+    if isinstance(tokenizer, Tokenizer):
+        tokenized = tokenizer.encode_batch_pairs(
+            sentence1s,
+            sentence2s,
+            max_length=max_length
+        )
+        tokenized['input_ids'] = torch.tensor(tokenized['input_ids'], dtype=torch.long)
+        tokenized['attention_mask'] = torch.tensor(tokenized['attention_mask'], dtype=torch.long)
+        tokenized['labels'] = torch.tensor(labels, dtype=torch.long)
+    else:
+        # huggingface tokenizer
+        tokenized = tokenizer.batch_encode_plus(
+            list(zip(sentence1s, sentence2s)),
+            max_length=max_length,
+            padding="longest",
+            truncation=True,
+            return_tensors="pt"
+        )
+        tokenized['labels'] = torch.tensor(labels, dtype=torch.long)
     return tokenized
 
 def get_dclm_dataloader(

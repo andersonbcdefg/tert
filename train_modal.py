@@ -55,6 +55,11 @@ image = Image.debian_slim(python_version="3.10").run_commands(
 
 app = App("train-bitbert")
 
+block_types = {
+    "bert": BertBlock,
+    "bitbert": BitBertBlock
+}
+
 @app.function(
     image=image,
     gpu=gpu.H100(),
@@ -62,7 +67,10 @@ app = App("train-bitbert")
     volumes={MOUNT_PATH: vol},
     secrets=[Secret.from_name("HF-SECRET")]
 )
-def train(job_id: str):
+def train(
+    job_id: str,
+    block_type_name: str = "bert"
+):
     import time
     import torch
     import torch.nn.functional as F
@@ -73,7 +81,7 @@ def train(job_id: str):
     print(torch.__version__)
     print("Training begins!")
     args = ModelArgs()
-    block_type = BitBertBlock
+    block_type = block_types.get(block_type_name)
     dataset = "dclm_fw"
     epochs = 1
     model = Model(block_type, args, max_seq_len=512)
@@ -90,10 +98,10 @@ def train(job_id: str):
     dataloader, num_samples = dataset_to_loader[dataset](
         batch_size=batch_size, tokenizer=tokenizer
     )
-    max_lr = 1.0e-4
+    max_lr = 3.0e-4
     total_steps = epochs * num_samples // batch_size
     optimizer = torch.optim.AdamW(model.parameters(), lr=max_lr)
-    scheduler = get_wsd_scheduler(optimizer, total_steps + 3, warmup_frac=0.02) # just in case
+    scheduler = get_wsd_scheduler(optimizer, total_steps + 3, warmup_frac=0.01) # just in case
     batch_size_manager = BatchSizeSchedule(96, 1536, total_steps, 0.9, batch_size)
     print(f"Taking {batch_size_manager.steps_per_batch_size} optimizer steps per batch size")
 

@@ -8,8 +8,8 @@ def get_wsd_scheduler(
     initial_lr_scale=0.1,
     final_lr_scale=0.0 # decay to 0
 ):
-    warmup_steps = total_steps * warmup_frac
-    decay_steps = total_steps * decay_frac
+    warmup_steps = int(total_steps * warmup_frac)
+    decay_steps = int(total_steps * decay_frac)
     # WSD = warmup, stable, decay
     def lr_lambda(step):
         # warmup
@@ -19,6 +19,8 @@ def get_wsd_scheduler(
             return alpha * 1.0 + (1.0 - alpha) * initial_lr_scale
         # stable
         elif step < total_steps - decay_steps:
+            return 1.0
+        elif decay_steps == 0:
             return 1.0
         else:
             steps_remaining = total_steps - step
@@ -103,6 +105,16 @@ class BatchSizeSchedule:
     def get_current_batch_size(self):
         return self.current_accum_iters * self.batch_size_increment
 
+class MaskingSchedule:
+    def __init__(
+        self,
+        total_steps,
+        start_phase=0.1, # time spent at initial ratio before decaying
+        end_phase=0.1, # time spent at final ratio before stopping
+        initial_mask_ratio=0.30,
+        final_mask_ratio=0.15
+    ):
+        pass
 # usage:
 # batch_size_scheduler = BatchSizeSchedule(initial_batch_size, final_batch_size, total_steps)
 # for i, batch in enumerate(dataloader):

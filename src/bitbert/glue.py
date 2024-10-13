@@ -17,10 +17,75 @@ import pandas as pd
 import numpy as np
 import yaml
 from .tokenizer import Tokenizer
-from finetune import FineTuneDataset, BERTClassifier, FineTuneConfig
+from .finetune import BERTClassifier
 from torch.utils.data import DataLoader
-from sklearn.metrics import matthews_corrcoef, f1_score, accuracy_score
-from scipy.stats import pearsonr, spearmanr
+
+# Configuration mapping for GLUE tasks
+GLUE_TASKS_CONFIG = {
+    "CoLA": {
+        "dataset_name": "glue",
+        "dataset_config": "cola",
+        "input1": "sentence",
+        "input2": None,  # Single sentence input
+        "label": "label",
+        "num_classes": 2,
+        "metrics": ["matthews"]
+    },
+    "SST-2": {
+        "dataset_name": "glue",
+        "dataset_config": "sst2",
+        "input1": "sentence",
+        "input2": None,  # Single sentence input
+        "label": "label",
+        "num_classes": 2,
+        "metrics": ["accuracy"]
+    },
+    "QQP": {
+        "dataset_name": "glue",
+        "dataset_config": "qqp",
+        "input1": "question1",
+        "input2": "question2",
+        "label": "is_duplicate",
+        "num_classes": 2,
+        "metrics": ["accuracy", "f1"]
+    },
+    "STS-B": {
+        "dataset_name": "glue",
+        "dataset_config": "stsb",
+        "input1": "sentence1",
+        "input2": "sentence2",
+        "label": "score",
+        "num_classes": 1,  # Regression task
+        "metrics": ["pearson"]
+    },
+    "MNLI": {
+        "dataset_name": "glue",
+        "dataset_config": "mnli",
+        "input1": "premise",
+        "input2": "hypothesis",
+        "label": "label",
+        "num_classes": 3,
+        "metrics": ["accuracy"]
+    },
+    "QNLI": {
+        "dataset_name": "glue",
+        "dataset_config": "qnli",
+        "input1": "question",
+        "input2": "sentence",
+        "label": "label",
+        "num_classes": 2,
+        "metrics": ["accuracy"]
+    },
+    "RTE": {
+        "dataset_name": "glue",
+        "dataset_config": "rte",
+        "input1": "sentence1",
+        "input2": "sentence2",
+        "label": "label",
+        "num_classes": 2,
+        "metrics": ["accuracy"]
+    }
+}
 
 def download_glue(glue_metadata: dict, data_dir="glue"):
     if not os.path.exists(data_dir):
@@ -159,138 +224,89 @@ def load_task(task, glue_metadata, data_dir="glue", split="train"):
     labels = df[label_key].values
     return sentence1s, sentence2s, labels
 
-def test_load_data():
-    metadata = yaml.safe_load(open("glue_metadata.yaml", 'r'))
-    for task in metadata['tasks']:
-        for split in ["train", "dev", "dev_matched", "dev_mismatched"]:
-            if os.path.exists(os.path.join("glue", task, f"{split}.tsv")):
-                print(f"Loading {task} {split}...")
-                sentence1s, sentence2s, labels = load_task(task, metadata, split=split)
-                dataset = FineTuneDataset(
-                    sentence1s,
-                    sentence2s,
-                    labels,
-                    metadata['num_classes'][task],
-                    max_len=512
-                )
-                print(f"Loaded {len(dataset)} examples")
+# def test_load_data():
+#     metadata = yaml.safe_load(open("glue_metadata.yaml", 'r'))
+#     for task in metadata['tasks']:
+#         for split in ["train", "dev", "dev_matched", "dev_mismatched"]:
+#             if os.path.exists(os.path.join("glue", task, f"{split}.tsv")):
+#                 print(f"Loading {task} {split}...")
+#                 sentence1s, sentence2s, labels = load_task(task, metadata, split=split)
+#                 dataset = FineTuneDataset(
+#                     sentence1s,
+#                     sentence2s,
+#                     labels,
+#                     metadata['num_classes'][task],
+#                     max_len=512
+#                 )
+#                 print(f"Loaded {len(dataset)} examples")
 
-def eval_model(model, dataloader, num_classes, metrics):
-    # Evaluate model
-    print("Evaluating model on dev set...")
-    device = next(model.parameters()).device
-    model.eval()
-    preds = []
-    labels = []
-    for x, y, mask in dataloader:
-        x, y, mask = x.to(device), y.to(device), mask.to(device)
-        with torch.no_grad():
-            logits = model(x, targets=None, attention_mask=mask) # bsz, num_classes
-        # if regression task, logits are used directly as predictions
-        if num_classes == 1:
-            preds.extend(logits.squeeze().cpu().numpy().tolist())
-        else:
-            preds.extend(torch.argmax(logits, dim=-1).cpu().numpy().tolist())
-        labels.extend(y.cpu().numpy().tolist())
-    result = {}
-    if "matthews" in metrics:
-        result["matthews"] = matthews_corrcoef(labels, preds)
-    if "accuracy" in metrics:
-        result["accuracy"] = accuracy_score(labels, preds)
-    if "f1" in metrics:
-        result["f1"] = f1_score(labels, preds)
-    if "pearson" in metrics:
-        result["pearson"] = pearsonr(labels, preds)[0]
-    if "spearman" in metrics:
-        result["spearman"] = spearmanr(labels, preds)[0]
-    return result
 
-def finetune_and_eval(model_config, task, finetune_config, glue_metadata, tokenizer):
-    print(f"Finetuning {task}...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_sentence1s, train_sentence2s, train_labels = load_task(task, glue_metadata, split="train")
-    train_dataset = FineTuneDataset(train_sentence1s, train_sentence2s, train_labels,
-            glue_metadata['num_classes'][task], tokenizer, max_len=128)
-    train_dataloader = DataLoader(train_dataset, batch_size=finetune_config.batch_size, shuffle=True)
-    if task != "MNLI":
-        dev_sentence1s, dev_sentence2s, dev_labels = load_task(task, glue_metadata, split="dev")
-        dev_dataset = FineTuneDataset(dev_sentence1s, dev_sentence2s, dev_labels,
-            glue_metadata['num_classes'][task], tokenizer, max_len=128)
-        dev_dataloader = DataLoader(dev_dataset, batch_size=finetune_config.batch_size, shuffle=False)
-    else:
-        dev_matched_sentence1s, dev_matched_sentence2s, dev_matched_labels = load_task(task, glue_metadata, split="dev_matched")
-        dev_matched_dataset = FineTuneDataset(dev_matched_sentence1s, dev_matched_sentence2s, dev_matched_labels,
-            glue_metadata['num_classes'][task], tokenizer, max_len=128)
-        dev_matched_dataloader = DataLoader(dev_matched_dataset, batch_size=finetune_config.batch_size, shuffle=False)
-        dev_mismatched_sentence1s, dev_mismatched_sentence2s, dev_mismatched_labels = load_task(task, glue_metadata, split="dev_mismatched")
-        dev_mismatched_dataset = FineTuneDataset(dev_mismatched_sentence1s, dev_mismatched_sentence2s, dev_mismatched_labels,
-            glue_metadata['num_classes'][task], tokenizer, max_len=128)
-        dev_mismatched_dataloader = DataLoader(dev_mismatched_dataset, batch_size=finetune_config.batch_size, shuffle=False)
+# def finetune_and_eval(model_config, task, finetune_config, glue_metadata, tokenizer):
 
-    # If configs are paths, load them from yaml
-    if isinstance(finetune_config, str):
-        finetune_config = FineTuneConfig.from_yaml(finetune_config)
-    if isinstance(model_config, str):
-        model_config = BERTConfig.from_yaml(model_config)
+#     # If configs are paths, load them from yaml
+#     if isinstance(finetune_config, str):
+#         finetune_config = FineTuneConfig.from_yaml(finetune_config)
+#     if isinstance(model_config, str):
+#         model_config = BERTConfig.from_yaml(model_config)
 
-    # Initialize wandb
-    wandb.init(
-        project="cramming-finetune-" + task,
-        config={"ft-config":finetune_config, "model-config":model_config}
-    )
+#     # Initialize wandb
+#     wandb.init(
+#         project="cramming-finetune-" + task,
+#         config={"ft-config":finetune_config, "model-config":model_config}
+#     )
 
-    # Create base model & fine-tuning model
-    if finetune_config.dropout != model_config.dropout:
-        print("Warning: finetune_config.dropout != model_config.dropout, using finetune_config.dropout")
-        model_config.dropout = finetune_config.dropout
-    base_model = BERT(model_config)
-    base_model.load_weights_from_checkpoint(finetune_config.checkpoint_path)
-    model = BERTForFineTuning(base_model, glue_metadata['num_classes'][task], dropout=finetune_config.dropout)
-    model.to(device)
+#     # Create base model & fine-tuning model
+#     if finetune_config.dropout != model_config.dropout:
+#         print("Warning: finetune_config.dropout != model_config.dropout, using finetune_config.dropout")
+#         model_config.dropout = finetune_config.dropout
+#     base_model = BERT(model_config)
+#     base_model.load_weights_from_checkpoint(finetune_config.checkpoint_path)
+#     model = BERTForFineTuning(base_model, glue_metadata['num_classes'][task], dropout=finetune_config.dropout)
+#     model.to(device)
 
-    # Create optimizer and scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=finetune_config.lr, weight_decay=finetune_config.weight_decay)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=finetune_config.lr,
-        steps_per_epoch=len(train_dataloader), epochs=finetune_config.num_epochs, pct_start=0.0)
+#     # Create optimizer and scheduler
+#     optimizer = torch.optim.AdamW(model.parameters(), lr=finetune_config.lr, weight_decay=finetune_config.weight_decay)
+#     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=finetune_config.lr,
+#         steps_per_epoch=len(train_dataloader), epochs=finetune_config.num_epochs, pct_start=0.0)
 
-    # Train model
-    print("Training!")
-    model.train()
-    step = 0
-    for epoch in range(finetune_config.num_epochs):
-        print(f"Epoch {epoch+1}/{finetune_config.num_epochs}")
-        for x, y, mask in train_dataloader:
-            step += 1
-            x, y, mask = x.to(device), y.to(device), mask.to(device)
-            optimizer.zero_grad(set_to_none=True)
-            loss = model(x, y, mask)
-            wandb.log({"train-loss": loss.item()})
-            if step % 100 == 0:
-                print(f"Step {step}, loss: {loss.item()}")
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-        if task != "MNLI":
-            result = eval_model(model, dev_dataloader, glue_metadata['num_classes'][task], metrics=glue_metadata['metrics'][task])
-            print(f"Dev {task} results after {epoch + 1} epochs:\n{result}")
-        else:
-            result_matched = eval_model(model, dev_matched_dataloader, glue_metadata['num_classes'][task], metrics=glue_metadata['metrics'][task])
-            result_mismatched = eval_model(model, dev_mismatched_dataloader, glue_metadata['num_classes'][task], metrics=glue_metadata['metrics'][task])
-            print(f"Dev {task} results after {epoch + 1} epochs:\n{result_matched}\n{result_mismatched}")
-    wandb.finish()
+#     # Train model
+#     print("Training!")
+#     model.train()
+#     step = 0
+#     for epoch in range(finetune_config.num_epochs):
+#         print(f"Epoch {epoch+1}/{finetune_config.num_epochs}")
+#         for x, y, mask in train_dataloader:
+#             step += 1
+#             x, y, mask = x.to(device), y.to(device), mask.to(device)
+#             optimizer.zero_grad(set_to_none=True)
+#             loss = model(x, y, mask)
+#             wandb.log({"train-loss": loss.item()})
+#             if step % 100 == 0:
+#                 print(f"Step {step}, loss: {loss.item()}")
+#             loss.backward()
+#             optimizer.step()
+#             scheduler.step()
+#         if task != "MNLI":
+#             result = eval_model(model, dev_dataloader, glue_metadata['num_classes'][task], metrics=glue_metadata['metrics'][task])
+#             print(f"Dev {task} results after {epoch + 1} epochs:\n{result}")
+#         else:
+#             result_matched = eval_model(model, dev_matched_dataloader, glue_metadata['num_classes'][task], metrics=glue_metadata['metrics'][task])
+#             result_mismatched = eval_model(model, dev_mismatched_dataloader, glue_metadata['num_classes'][task], metrics=glue_metadata['metrics'][task])
+#             print(f"Dev {task} results after {epoch + 1} epochs:\n{result_matched}\n{result_mismatched}")
+#     wandb.finish()
 
 
 
-def run_glue(model_config, finetune_config):
-    # download glue if it doesn't exist
-    if isinstance(finetune_config, str):
-        finetune_config = FineTuneConfig.from_yaml(finetune_config)
-    if not os.path.exists("glue") or not os.path.exists("glue/CoLA"):
-        download_glue(metadata_file=finetune_config.metadata_file)
-    glue_metadata = yaml.safe_load(open(finetune_config.metadata_file, 'r'))
+# def run_glue(model_config, finetune_config):
+#     # download glue if it doesn't exist
+#     if isinstance(finetune_config, str):
+#         finetune_config = FineTuneConfig.from_yaml(finetune_config)
+#     if not os.path.exists("glue") or not os.path.exists("glue/CoLA"):
+#         download_glue(metadata_file=finetune_config.metadata_file)
+#     glue_metadata = yaml.safe_load(open(finetune_config.metadata_file, 'r'))
 
-    # load tokenizer
-    tokenizer = load_tokenizer(finetune_config.tokenizer_path)
+#     # load tokenizer
+#     tokenizer = load_tokenizer(finetune_config.tokenizer_path)
 
-    for task in finetune_config.tasks:
-        finetune_and_eval(model_config, task, finetune_config, glue_metadata, tokenizer)
+#     for task in finetune_config.tasks:
+#         finetune_and_eval(model_config, task, finetune_config, glue_metadata, tokenizer)
