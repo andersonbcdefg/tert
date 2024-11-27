@@ -22,207 +22,227 @@ from torch.utils.data import DataLoader
 
 # Configuration mapping for GLUE tasks
 GLUE_TASKS_CONFIG = {
-    "CoLA": {
-        "dataset_name": "glue",
-        "dataset_config": "cola",
-        "input1": "sentence",
-        "input2": None,  # Single sentence input
-        "label": "label",
-        "num_classes": 2,
-        "metrics": ["matthews"]
-    },
-    "SST-2": {
-        "dataset_name": "glue",
-        "dataset_config": "sst2",
-        "input1": "sentence",
-        "input2": None,  # Single sentence input
-        "label": "label",
-        "num_classes": 2,
-        "metrics": ["accuracy"]
-    },
-    "QQP": {
-        "dataset_name": "glue",
-        "dataset_config": "qqp",
-        "input1": "question1",
-        "input2": "question2",
-        "label": "is_duplicate",
-        "num_classes": 2,
-        "metrics": ["accuracy", "f1"]
-    },
-    "STS-B": {
-        "dataset_name": "glue",
-        "dataset_config": "stsb",
-        "input1": "sentence1",
-        "input2": "sentence2",
-        "label": "score",
-        "num_classes": 1,  # Regression task
-        "metrics": ["pearson"]
-    },
-    "MNLI": {
-        "dataset_name": "glue",
-        "dataset_config": "mnli",
-        "input1": "premise",
-        "input2": "hypothesis",
-        "label": "label",
-        "num_classes": 3,
-        "metrics": ["accuracy"]
-    },
-    "QNLI": {
-        "dataset_name": "glue",
-        "dataset_config": "qnli",
-        "input1": "question",
-        "input2": "sentence",
-        "label": "label",
-        "num_classes": 2,
-        "metrics": ["accuracy"]
-    },
-    "RTE": {
-        "dataset_name": "glue",
-        "dataset_config": "rte",
-        "input1": "sentence1",
-        "input2": "sentence2",
-        "label": "label",
-        "num_classes": 2,
-        "metrics": ["accuracy"]
-    }
+  "CoLA": {
+    "dataset_name": "glue",
+    "dataset_config": "cola",
+    "input1": "sentence",
+    "input2": None,  # Single sentence input
+    "label": "label",
+    "num_classes": 2,
+    "metrics": ["matthews"],
+  },
+  "SST-2": {
+    "dataset_name": "glue",
+    "dataset_config": "sst2",
+    "input1": "sentence",
+    "input2": None,  # Single sentence input
+    "label": "label",
+    "num_classes": 2,
+    "metrics": ["accuracy"],
+  },
+  "QQP": {
+    "dataset_name": "glue",
+    "dataset_config": "qqp",
+    "input1": "question1",
+    "input2": "question2",
+    "label": "is_duplicate",
+    "num_classes": 2,
+    "metrics": ["accuracy", "f1"],
+  },
+  "STS-B": {
+    "dataset_name": "glue",
+    "dataset_config": "stsb",
+    "input1": "sentence1",
+    "input2": "sentence2",
+    "label": "score",
+    "num_classes": 1,  # Regression task
+    "metrics": ["pearson"],
+  },
+  "MNLI": {
+    "dataset_name": "glue",
+    "dataset_config": "mnli",
+    "input1": "premise",
+    "input2": "hypothesis",
+    "label": "label",
+    "num_classes": 3,
+    "metrics": ["accuracy"],
+  },
+  "QNLI": {
+    "dataset_name": "glue",
+    "dataset_config": "qnli",
+    "input1": "question",
+    "input2": "sentence",
+    "label": "label",
+    "num_classes": 2,
+    "metrics": ["accuracy"],
+  },
+  "RTE": {
+    "dataset_name": "glue",
+    "dataset_config": "rte",
+    "input1": "sentence1",
+    "input2": "sentence2",
+    "label": "label",
+    "num_classes": 2,
+    "metrics": ["accuracy"],
+  },
 }
 
+
 def download_glue(glue_metadata: dict, data_dir="glue"):
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-    # metadata = yaml.safe_load(open(metadata_file, 'r'))
-    for task in glue_metadata['tasks']:
-        print(f"Downloading and extracting {task}...")
-        data_file = f"{task}.zip"
-        urllib.request.urlretrieve(glue_metadata['task_urls'][task], data_file)
-        with zipfile.ZipFile(data_file) as zip_ref:
-            zip_ref.extractall(data_dir)
-        os.remove(data_file)
-        if task == "CoLA":
-            # add header to CoLA train, dev
-            cola_train_df = pd.read_csv(os.path.join(data_dir, "CoLA", "train.tsv"), sep='\t', header=None, names=['sentence_source', 'label', 'label_notes', 'sentence'])
-            cola_eval_df = pd.read_csv(os.path.join(data_dir, "CoLA", "dev.tsv"), sep='\t', header=None, names=['sentence_source', 'label', 'label_notes', 'sentence'])
-            cola_train_df.to_csv(os.path.join(data_dir, "CoLA", "train.tsv"), sep='\t', index=False)
-            cola_eval_df.to_csv(os.path.join(data_dir, "CoLA", "dev.tsv"), sep='\t', index=False)
-            print("Added header to CoLA train & dev.")
-    print("Done!")
+  if not os.path.exists(data_dir):
+    os.makedirs(data_dir)
+  # metadata = yaml.safe_load(open(metadata_file, 'r'))
+  for task in glue_metadata["tasks"]:
+    print(f"Downloading and extracting {task}...")
+    data_file = f"{task}.zip"
+    urllib.request.urlretrieve(glue_metadata["task_urls"][task], data_file)
+    with zipfile.ZipFile(data_file) as zip_ref:
+      zip_ref.extractall(data_dir)
+    os.remove(data_file)
+    if task == "CoLA":
+      # add header to CoLA train, dev
+      cola_train_df = pd.read_csv(
+        os.path.join(data_dir, "CoLA", "train.tsv"),
+        sep="\t",
+        header=None,
+        names=["sentence_source", "label", "label_notes", "sentence"],
+      )
+      cola_eval_df = pd.read_csv(
+        os.path.join(data_dir, "CoLA", "dev.tsv"),
+        sep="\t",
+        header=None,
+        names=["sentence_source", "label", "label_notes", "sentence"],
+      )
+      cola_train_df.to_csv(
+        os.path.join(data_dir, "CoLA", "train.tsv"), sep="\t", index=False
+      )
+      cola_eval_df.to_csv(
+        os.path.join(data_dir, "CoLA", "dev.tsv"), sep="\t", index=False
+      )
+      print("Added header to CoLA train & dev.")
+  print("Done!")
+
 
 def parse_mnli_line(idx, line):
-    items = line.strip().split('\t')
-    if len(items) != 12 and len(items) != 16:
-        print(f"Invalid line: {idx}", end=', ')
-        return None
-    premise = items[8].strip()
-    hypothesis = items[9].strip()
-    gold_label = items[-1].strip()
-    if gold_label not in ["entailment", "contradiction", "neutral"]:
-        print(f"Invalid gold label: {gold_label}")
-        return None
-    return {
-        'premise': premise,
-        'hypothesis': hypothesis,
-        'label': 0 if gold_label == "entailment" else 1 if gold_label == "neutral" else 2
-    }
+  items = line.strip().split("\t")
+  if len(items) != 12 and len(items) != 16:
+    print(f"Invalid line: {idx}", end=", ")
+    return None
+  premise = items[8].strip()
+  hypothesis = items[9].strip()
+  gold_label = items[-1].strip()
+  if gold_label not in ["entailment", "contradiction", "neutral"]:
+    print(f"Invalid gold label: {gold_label}")
+    return None
+  return {
+    "premise": premise,
+    "hypothesis": hypothesis,
+    "label": 0 if gold_label == "entailment" else 1 if gold_label == "neutral" else 2,
+  }
+
 
 def parse_stsb_line(idx, line):
-    items = line.strip().split('\t')
-    if len(items) != 10:
-        print(f"Invalid line: {idx}")
-        return None
-    sentence1 = items[7].strip()
-    sentence2 = items[8].strip()
-    score = items[-1].strip()
-    try:
-        score = float(score)
-    except:
-        print(f"Invalid label: {score}")
-        return None
-    return {
-        'sentence1': sentence1,
-        'sentence2': sentence2,
-        'score': score
-    }
+  items = line.strip().split("\t")
+  if len(items) != 10:
+    print(f"Invalid line: {idx}")
+    return None
+  sentence1 = items[7].strip()
+  sentence2 = items[8].strip()
+  score = items[-1].strip()
+  try:
+    score = float(score)
+  except:
+    print(f"Invalid label: {score}")
+    return None
+  return {"sentence1": sentence1, "sentence2": sentence2, "score": score}
+
 
 def parse_qnli_line(idx, line):
-    items = line.strip().split('\t')
-    if len(items) != 4:
-        print(f"Invalid line: {idx}")
-        return None
-    question = items[1].strip()
-    sentence = items[2].strip()
-    label = items[-1].strip()
-    if label not in ["entailment", "not_entailment"]:
-        print(f"Invalid label: {label}")
-        return None
-    return {
-        'question': question,
-        'sentence': sentence,
-        'label': 0 if label == "entailment" else 1
-    }
+  items = line.strip().split("\t")
+  if len(items) != 4:
+    print(f"Invalid line: {idx}")
+    return None
+  question = items[1].strip()
+  sentence = items[2].strip()
+  label = items[-1].strip()
+  if label not in ["entailment", "not_entailment"]:
+    print(f"Invalid label: {label}")
+    return None
+  return {
+    "question": question,
+    "sentence": sentence,
+    "label": 0 if label == "entailment" else 1,
+  }
+
 
 def load_mnli(data_dir="glue", split="train"):
-    records = []
-    with open(os.path.join(data_dir, "MNLI", f"{split}.tsv"), 'r') as f:
-        lines = f.readlines()
-    for idx, line in enumerate(lines):
-        if idx == 0:
-            continue
-        record = parse_mnli_line(idx, line)
-        if record is not None:
-            records.append(record)
-    df = pd.DataFrame.from_records(records)
-    return df
+  records = []
+  with open(os.path.join(data_dir, "MNLI", f"{split}.tsv"), "r") as f:
+    lines = f.readlines()
+  for idx, line in enumerate(lines):
+    if idx == 0:
+      continue
+    record = parse_mnli_line(idx, line)
+    if record is not None:
+      records.append(record)
+  df = pd.DataFrame.from_records(records)
+  return df
+
 
 def load_stsb(data_dir="glue", split="train"):
-    records = []
-    with open(os.path.join(data_dir, "STS-B", f"{split}.tsv"), 'r') as f:
-        lines = f.readlines()
-    for idx, line in enumerate(lines):
-        if idx == 0:
-            continue
-        record = parse_stsb_line(idx, line)
-        if record is not None:
-            records.append(record)
-    df = pd.DataFrame.from_records(records)
-    return df
+  records = []
+  with open(os.path.join(data_dir, "STS-B", f"{split}.tsv"), "r") as f:
+    lines = f.readlines()
+  for idx, line in enumerate(lines):
+    if idx == 0:
+      continue
+    record = parse_stsb_line(idx, line)
+    if record is not None:
+      records.append(record)
+  df = pd.DataFrame.from_records(records)
+  return df
+
 
 def load_qnli(data_dir="glue", split="train"):
-    records = []
-    with open(os.path.join(data_dir, "QNLI", f"{split}.tsv"), 'r') as f:
-        lines = f.readlines()
-    for idx, line in enumerate(lines):
-        if idx == 0:
-            continue
-        record = parse_qnli_line(idx, line)
-        if record is not None:
-            records.append(record)
-    df = pd.DataFrame.from_records(records)
-    return df
+  records = []
+  with open(os.path.join(data_dir, "QNLI", f"{split}.tsv"), "r") as f:
+    lines = f.readlines()
+  for idx, line in enumerate(lines):
+    if idx == 0:
+      continue
+    record = parse_qnli_line(idx, line)
+    if record is not None:
+      records.append(record)
+  df = pd.DataFrame.from_records(records)
+  return df
+
 
 def load_rte(data_dir="glue", split="train"):
-    df = pd.read_csv(os.path.join(data_dir, "RTE", f"{split}.tsv"), sep='\t', header=0)
-    df.label = df.label.apply(lambda x: 0 if x == "entailment" else 1)
-    return df
+  df = pd.read_csv(os.path.join(data_dir, "RTE", f"{split}.tsv"), sep="\t", header=0)
+  df.label = df.label.apply(lambda x: 0 if x == "entailment" else 1)
+  return df
+
 
 # load data, output (sentence1, sentence2, label) lists
 def load_task(task, glue_metadata, data_dir="glue", split="train"):
-    if task == "MNLI":
-        df = load_mnli(data_dir, split)
-    elif task == "STS-B":
-        df = load_stsb(data_dir, split)
-    elif task == "QNLI":
-        df = load_qnli(data_dir, split)
-    elif task == "RTE":
-        df = load_rte(data_dir, split)
-    else:
-        df = pd.read_csv(os.path.join(data_dir, task, f"{split}.tsv"), sep='\t', header=0)
-    sentence1_key = glue_metadata['task_cols'][task]['sentence1']
-    sentence2_key = glue_metadata['task_cols'][task]['sentence2']
-    label_key = glue_metadata['task_cols'][task]['label']
-    sentence1s = df[sentence1_key].values
-    sentence2s = df[sentence2_key].values if sentence2_key is not None else None
-    labels = df[label_key].values
-    return sentence1s, sentence2s, labels
+  if task == "MNLI":
+    df = load_mnli(data_dir, split)
+  elif task == "STS-B":
+    df = load_stsb(data_dir, split)
+  elif task == "QNLI":
+    df = load_qnli(data_dir, split)
+  elif task == "RTE":
+    df = load_rte(data_dir, split)
+  else:
+    df = pd.read_csv(os.path.join(data_dir, task, f"{split}.tsv"), sep="\t", header=0)
+  sentence1_key = glue_metadata["task_cols"][task]["sentence1"]
+  sentence2_key = glue_metadata["task_cols"][task]["sentence2"]
+  label_key = glue_metadata["task_cols"][task]["label"]
+  sentence1s = df[sentence1_key].values
+  sentence2s = df[sentence2_key].values if sentence2_key is not None else None
+  labels = df[label_key].values
+  return sentence1s, sentence2s, labels
+
 
 # def test_load_data():
 #     metadata = yaml.safe_load(open("glue_metadata.yaml", 'r'))
@@ -294,7 +314,6 @@ def load_task(task, glue_metadata, data_dir="glue", split="train"):
 #             result_mismatched = eval_model(model, dev_mismatched_dataloader, glue_metadata['num_classes'][task], metrics=glue_metadata['metrics'][task])
 #             print(f"Dev {task} results after {epoch + 1} epochs:\n{result_matched}\n{result_mismatched}")
 #     wandb.finish()
-
 
 
 # def run_glue(model_config, finetune_config):

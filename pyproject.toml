@@ -9,3 +9,6 @@ dependencies = ["tiktoken", "blobfile"]
 [tool.pyright]
 venv = ".venv"
 venvPath = "."
+
+[tool.ruff]
+indent-width = 2
