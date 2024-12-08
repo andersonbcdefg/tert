@@ -1,0 +1,13 @@
+datasets==3.1.0
+tiktoken
+blobfile
+transformers
+awkward
+einops
+tqdm
+pyarrow
+zstandard
+heavyball
+pydantic>=2.0
+torchao@git+https://github.com/pytorch/ao.git
+muon@git+https://github.com/KellerJordan/Muon.git
