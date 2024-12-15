@@ -60,7 +60,8 @@ class Model(nn.Module):
         input_ids: torch.Tensor, # (batch, seqlen)
         attention_mask: torch.Tensor, # (batch, seqlen)
         labels: torch.Tensor, # (batch, seqlen)
-        max_flat_seq_len: int
+        max_flat_seq_len: int | None = None,
+        ignore_labels: bool = False
     ):
         """
         separate from forward so it doesn't mess with compile
@@ -70,32 +71,41 @@ class Model(nn.Module):
         input_ids, indices, cu_seqlens = unpad_input( # pyright: ignore
             input_ids_3d, attention_mask
         )
+        # print("after unpad", input_ids.shape)
         # Remove the fake dimension we added
         input_ids = input_ids.squeeze(-1).unsqueeze(0)  # (1, total_tokens) # pyright: ignore
-
+        # print("after squeeze/unsqueeze", input_ids.shape)
         # pad or truncate input_ids to max_flat_seq_len
-        input_ids = pad_or_truncate(
-            input_ids, value=0, dim=1, max_length=max_flat_seq_len
-        )
+        if max_flat_seq_len is not None:
+            input_ids = pad_or_truncate(
+                input_ids, value=0, dim=1, max_length=max_flat_seq_len
+            )
+        # print("after pad_or_truncate", input_ids.shape)
 
         # pad or truncate the labels
-        labels_flat = labels[attention_mask.bool()].view(-1)
-        labels_flat = pad_or_truncate(
-            labels_flat, value=-100, dim=0, max_length=max_flat_seq_len
-        )
+        if ignore_labels:
+            labels_flat = labels
+        else:
+            labels_flat = labels[attention_mask.bool()].view(-1)
+            if max_flat_seq_len is not None:
+                labels_flat = pad_or_truncate(
+                    labels_flat, value=-100, dim=0, max_length=max_flat_seq_len
+                )
 
         # truncate/pad cu_seqlens to max_flat_seq_len
-        mask = cu_seqlens < max_flat_seq_len
-        cu_seqlens = torch.cat([
-            cu_seqlens[mask],
-            torch.tensor([max_flat_seq_len], device=cu_seqlens.device, dtype=cu_seqlens.dtype)
-        ])
+        if max_flat_seq_len is not None:
+            mask = cu_seqlens < max_flat_seq_len
+            cu_seqlens = torch.cat([
+                cu_seqlens[mask],
+                torch.tensor([max_flat_seq_len], device=cu_seqlens.device, dtype=cu_seqlens.dtype)
+            ])
 
         # get position ids and pad/truncate if necessary
         position_ids = compute_position_ids(attention_mask)
-        position_ids = pad_or_truncate(
-            position_ids, value=-1, dim=0, max_length=max_flat_seq_len
-        )
+        if max_flat_seq_len is not None:
+            position_ids = pad_or_truncate(
+                position_ids, value=-1, dim=0, max_length=max_flat_seq_len
+            )
 
         # get block mask
         block_mask = get_block_mask(cu_seqlens)

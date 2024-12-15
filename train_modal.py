@@ -5,24 +5,27 @@ from src.bitbert.data import (
     download_wiki_data,
 )
 
-DATA_DIR = "/data"
+# DATA_DIR = "/data"
 MOUNT_PATH = "/training_outputs"
+DATA_MOUNT_PATH = "/data_vol"
+DATA_DIR = DATA_MOUNT_PATH
 
 
-def download_dclm():
-    download_dclm_data(DATA_DIR)
+# def download_dclm():
+#     download_dclm_data(DATA_DIR)
 
 
-def download_fineweb():
-    download_fineweb_data(DATA_DIR)
+# def download_fineweb():
+#     download_fineweb_data(DATA_DIR)
 
 
-def download_wiki():
-    download_wiki_data(DATA_DIR)
+# def download_wiki():
+#     print("hellooo")
+#     download_wiki_data(DATA_DIR)
 
 
 vol = Volume.from_name("bitbert-outputs", create_if_missing=True)
-
+data_vol = Volume.from_name("bitbert-data", create_if_missing=True)
 
 def save_callback():
     vol.commit()
@@ -46,25 +49,18 @@ image = (
         "liger-kernel",
         "pyarrow",
         "zstandard",
-        "heavyball",
         "pydantic>=2.0",
+        "adam-mini"
     )
     .pip_install(
         "torchao@git+https://github.com/pytorch/ao.git",
         "muon@git+https://github.com/KellerJordan/Muon.git",
-    )
-    .run_function(download_dclm, secrets=[Secret.from_name("HF-SECRET")])
-    .run_function(download_fineweb, secrets=[Secret.from_name("HF-SECRET")])
-    .run_function(download_wiki, secrets=[Secret.from_name("HF-SECRET")])
-    .run_commands("pip uninstall -y liger-kernel")
-    .pip_install(
-        "liger-kernel@git+https://github.com/andersonbcdefg/Liger-Kernel.git@a874bfe"
-    )
-    .pip_install(
         "cut-cross-entropy@git+https://github.com/andersonbcdefg/ml-cross-entropy.git"
     )
-    .pip_install("adam-mini")
-    .env({"TORCH_TRACE": "/training_outputs/trace"})
+    # .run_function(download_wiki, secrets=[Secret.from_name("HF-SECRET")])
+    # .run_function(download_dclm, secrets=[Secret.from_name("HF-SECRET")])
+    # .run_function(download_fineweb, secrets=[Secret.from_name("HF-SECRET")])
+    # .env({"TORCH_TRACE": "/training_outputs/trace"})
 )
 
 app = App("train-bitbert")
@@ -74,7 +70,10 @@ app = App("train-bitbert")
     image=image,
     gpu=gpu.H100(),
     timeout=60 * 60 * 24,
-    volumes={MOUNT_PATH: vol},
+    volumes={
+        MOUNT_PATH: vol,
+        DATA_MOUNT_PATH: data_vol
+    },
     secrets=[Secret.from_name("HF-SECRET")],
 )
 def train(job_id: str):

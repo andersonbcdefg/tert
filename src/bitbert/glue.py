@@ -1,73 +1,75 @@
+GLUE_TASKS_CONFIG = {
+  "CoLA": {
+    "dataset_name": "glue",
+    "dataset_config": "cola",
+    "input1": "sentence",
+    "input2": None,  # Single sentence input
+    "label": "label",
+    "num_classes": 2,
+    "metrics": ["matthews"],
+  },
+  "SST-2": {
+    "dataset_name": "glue",
+    "dataset_config": "sst2",
+    "input1": "sentence",
+    "input2": None,  # Single sentence input
+    "label": "label",
+    "num_classes": 2,
+    "metrics": ["accuracy"],
+  },
+  "QQP": {
+    "dataset_name": "glue",
+    "dataset_config": "qqp",
+    "input1": "question1",
+    "input2": "question2",
+    "label": "is_duplicate",
+    "num_classes": 2,
+    "metrics": ["accuracy", "f1"],
+  },
+  "STS-B": {
+    "dataset_name": "glue",
+    "dataset_config": "stsb",
+    "input1": "sentence1",
+    "input2": "sentence2",
+    "label": "score",
+    "num_classes": 1,  # Regression task
+    "metrics": ["pearson"],
+  },
+  "MNLI": {
+    "dataset_name": "glue",
+    "dataset_config": "mnli",
+    "input1": "premise",
+    "input2": "hypothesis",
+    "label": "label",
+    "num_classes": 3,
+    "metrics": ["accuracy"],
+  },
+  "QNLI": {
+    "dataset_name": "glue",
+    "dataset_config": "qnli",
+    "input1": "question",
+    "input2": "sentence",
+    "label": "label",
+    "num_classes": 2,
+    "metrics": ["accuracy"],
+  },
+  "RTE": {
+    "dataset_name": "glue",
+    "dataset_config": "rte",
+    "input1": "sentence1",
+    "input2": "sentence2",
+    "label": "label",
+    "num_classes": 2,
+    "metrics": ["accuracy"],
+  },
+}
+
+
 # from typing import Literal
 # from .tokenizer import Tokenizer
 # from datasets import load_dataset
 
 # # Configuration mapping for GLUE tasks
-# GLUE_TASKS_CONFIG = {
-#   "CoLA": {
-#     "dataset_name": "glue",
-#     "dataset_config": "cola",
-#     "input1": "sentence",
-#     "input2": None,  # Single sentence input
-#     "label": "label",
-#     "num_classes": 2,
-#     "metrics": ["matthews"],
-#   },
-#   "SST-2": {
-#     "dataset_name": "glue",
-#     "dataset_config": "sst2",
-#     "input1": "sentence",
-#     "input2": None,  # Single sentence input
-#     "label": "label",
-#     "num_classes": 2,
-#     "metrics": ["accuracy"],
-#   },
-#   "QQP": {
-#     "dataset_name": "glue",
-#     "dataset_config": "qqp",
-#     "input1": "question1",
-#     "input2": "question2",
-#     "label": "is_duplicate",
-#     "num_classes": 2,
-#     "metrics": ["accuracy", "f1"],
-#   },
-#   "STS-B": {
-#     "dataset_name": "glue",
-#     "dataset_config": "stsb",
-#     "input1": "sentence1",
-#     "input2": "sentence2",
-#     "label": "score",
-#     "num_classes": 1,  # Regression task
-#     "metrics": ["pearson"],
-#   },
-#   "MNLI": {
-#     "dataset_name": "glue",
-#     "dataset_config": "mnli",
-#     "input1": "premise",
-#     "input2": "hypothesis",
-#     "label": "label",
-#     "num_classes": 3,
-#     "metrics": ["accuracy"],
-#   },
-#   "QNLI": {
-#     "dataset_name": "glue",
-#     "dataset_config": "qnli",
-#     "input1": "question",
-#     "input2": "sentence",
-#     "label": "label",
-#     "num_classes": 2,
-#     "metrics": ["accuracy"],
-#   },
-#   "RTE": {
-#     "dataset_name": "glue",
-#     "dataset_config": "rte",
-#     "input1": "sentence1",
-#     "input2": "sentence2",
-#     "label": "label",
-#     "num_classes": 2,
-#     "metrics": ["accuracy"],
-#   },
-# }
 
 # def load_and_tokenize_glue_split(
 #     task_name,

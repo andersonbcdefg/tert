@@ -131,8 +131,8 @@ class CosSinRotary(torch.nn.Module):
 
     @torch.compile
     def _rotate(self, x, sin, cos):
-        assert x.ndim == 4  # multihead attention
-        x1, x2 = x.chunk(2, dim=-1)
+        assert x.ndim == 4  # multihead attention: (b, l, h, d)
+        x1, x2 = x.chunk(2, dim=-1) # b, l, h, d//2
         y1 = x1 * cos + x2 * sin
         y2 = x1 * (-sin) + x2 * cos
         return torch.cat([y1, y2], 3).type_as(x)
@@ -140,7 +140,10 @@ class CosSinRotary(torch.nn.Module):
     def forward(
         self, xq: torch.Tensor, xk: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        sin, cos = self.rotation_tensor
+        sin, cos = self.rotation_tensor # 1, L, 1, D//2
+        # truncate sin and cos to the same length as xq
+        sin = sin[:, :xq.shape[1]]
+        cos = cos[:, :xq.shape[1]]
         return self._rotate(xq, sin, cos), self._rotate(xk, sin, cos)
 
 
@@ -402,3 +405,57 @@ class BitBertBlock(nn.Module):
         x = x + self.attention(x, mask, rotary_emb, dropout_p=dropout_p)
         x = x + self.mlp(x, dropout_p=dropout_p)
         return x
+
+class MlpBlock(nn.Module):
+    def __init__(self, dim, mlp_dim=None):
+        super().__init__()
+        mlp_dim = mlp_dim if mlp_dim is not None else 4 * dim
+        self.fc1 = nn.Linear(dim, mlp_dim)
+        self.gelu = nn.GELU()
+        self.fc2 = nn.Linear(mlp_dim, dim)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.gelu(x)
+        x = self.fc2(x)
+        return x
+
+class MAPHead(nn.Module):
+    """Multihead Attention Pooling."""
+    def __init__(self, dim, mlp_dim=None, num_heads=12):
+        super().__init__()
+        self.num_heads = num_heads
+        self.mlp_dim = mlp_dim if mlp_dim is not None else 4 * dim
+
+        # Learnable query probe
+        self.probe = nn.Parameter(torch.empty(1, 1, dim))
+        nn.init.xavier_uniform_(self.probe)
+
+        # Multi-head attention
+        self.attention = nn.MultiheadAttention(
+            embed_dim=dim,
+            num_heads=num_heads,
+            batch_first=True
+        )
+
+        # Post-attention processing
+        self.norm = nn.LayerNorm(dim)
+        self.mlp = MlpBlock(dim, self.mlp_dim)
+
+    def forward(self, x):
+        # x shape: (batch_size, seq_len, dim)
+        n = x.shape[0]
+
+        # Expand probe to batch size
+        probe = self.probe.expand(n, -1, -1)  # (batch_size, 1, dim)
+
+        # Apply attention
+        # Note: PyTorch attention expects (batch_size, seq_len, dim) format
+        attn_out, _ = self.attention(probe, x, x)
+
+        # Apply layer norm and residual
+        y = self.norm(attn_out)
+        x = attn_out + self.mlp(y)
+
+        # Return squeezed output (batch_size, dim)
+        return x.squeeze(1)

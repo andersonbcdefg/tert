@@ -14,25 +14,26 @@ from .optimizer import get_optimizer
 from .checkpoint import save_checkpoint, resume_from_checkpoint
 from .loss import linear_cross_entropy
 
-
+# TODO: add option to resume from specific checkpoint vs.
+# auto-resuming from job of the same name
 class TrainArgs(BaseModel):
-    microbatch_size: int = 96
+    microbatch_size: int = 384
     max_batch_size: int = 1536
-    max_seq_len: int = 64
-    max_lr: float = 1.0e-3
+    max_seq_len: int = 128
+    max_lr: float = 3.0e-4
     lr_warmup_frac: float = 0.01
     lr_decay_frac: float = 0.7
-    lr_final_frac: float = 0.1
+    lr_final_frac: float = 0.01
     lr_final_scale: float = 0.05
-    batch_size_warmup_frac: float = 0.5
+    batch_size_warmup_frac: float = 0.9
     initial_mask_ratio: float = 0.3
     final_mask_ratio: float = 0.15
     mask_stable_start: float = 0.2
     mask_stable_end: float = 0.1
-    optimizer_name: str = "torch_adamw"
+    optimizer_name: str = "muon"
     data_splits: list[str] = ["dclm", "fineweb", "wiki"]
     weights: list[float] = [1.0, 1.0, 0.5]
-    num_samples: int = 100_000
+    num_samples: int = 100_000_000
     save_every: int = 20_000
 
     @computed_field
@@ -127,7 +128,10 @@ def train(
         total_steps=total_steps, tokenizer=tokenizer, max_length=args.max_seq_len
     )
     dataset = get_combined_dataset(
-        data_dir, args.data_splits, args.weights, chunk_size=args.max_seq_len
+        data_dir,
+        args.data_splits,
+        args.weights,
+        chunk_size=args.max_seq_len
     )
     # we slightly increase the batch size then truncate so that every sequence
     # has a fixed shape and (probably) uses little to no padding
@@ -137,6 +141,7 @@ def train(
         num_workers=1,
         pin_memory=True,
         collate_fn=collator,
+        prefetch_factor=120
     )
     optimizer = get_optimizer(model, args.optimizer_name, args.max_lr)
     scheduler = get_wsd_scheduler(

@@ -1,23 +1,23 @@
-import heavyball
+# import heavyball
 from muon import Muon
 from adam_mini import Adam_mini
 import torch.optim
 from torchao.prototype.low_bit_optim import AdamW8bit, AdamW4bit
-from heavyball.utils import set_torch
-import heavyball.utils
+# from heavyball.utils import set_torch
+# import heavyball.utils
 
-heavyball.utils.compile_mode = "reduce-overhead"
-set_torch()
+# heavyball.utils.compile_mode = "reduce-overhead"
+# set_torch()
 
 
 OPTIMIZERS = {
     "torch_adamw": torch.optim.AdamW,
-    "heavyball_adamw": heavyball.AdamW,
+    # "heavyball_adamw": heavyball.AdamW,
     "adamw_8bit": AdamW8bit,
     "adamw_4bit": AdamW4bit,
-    "sf_adamw": heavyball.SFAdamW,
+    # "sf_adamw": heavyball.SFAdamW,
     "adam_mini": Adam_mini,
-    "psgd": heavyball.PSGDKron,
+    # "psgd": heavyball.PSGDKron,
     "muon": Muon,
 }
 

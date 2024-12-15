@@ -7,10 +7,103 @@ from collections import deque
 import pyarrow.parquet as pq
 from typing import Any, Iterator
 from .tokenizer import Tokenizer
+from pathlib import Path
+from tqdm.auto import tqdm
 
 # from .glue import download_glue, load_task
 from .scheduler import MaskingScheduleCollator
 from .util import chunk_text
+
+def reshard(directory: str, rows_per_shard: int) -> None:
+    """
+    Reshards parquet files in a directory to have a specified number of rows per shard.
+    Original files are deleted only after successful resharding.
+    Uses pyarrow for efficient parquet handling.
+
+    Args:
+        directory (str): Path to directory containing parquet files
+        rows_per_shard (int): Number of rows desired in each output shard
+    """
+    # Convert to Path object for better path handling
+    dir_path = Path(directory)
+
+    # Ensure the directory exists
+    if not dir_path.exists():
+        raise ValueError(f"Directory {directory} does not exist")
+
+    # Get all parquet files in directory
+    parquet_files = list(dir_path.glob("**/*.parquet")) + list(dir_path.glob("**/*.parquet.zst"))
+    if not parquet_files:
+        print(f"No parquet files found in {directory}")
+        return
+
+    print(f"Found {len(parquet_files)} parquet files to reshard")
+
+    # Process each file
+    for file_path in tqdm(parquet_files):
+        try:
+            # Open the parquet file
+            print(f"Processing {file_path}")
+            parquet_file = pq.ParquetFile(file_path)
+            total_rows = parquet_file.metadata.num_rows
+
+            # Calculate number of shards needed
+            num_shards = (total_rows + rows_per_shard - 1) // rows_per_shard
+
+            # Create new shards
+            success = True
+            new_files = []
+
+            # Read the entire file as a table first
+            table = parquet_file.read()
+
+            for shard_idx in range(num_shards):
+                start_idx = shard_idx * rows_per_shard
+                end_idx = min((shard_idx + 1) * rows_per_shard, total_rows)
+                row_count = end_idx - start_idx
+
+                # Create shard name based on original filename
+                original_stem = file_path.stem
+                new_filename = f"{original_stem}_shard_{shard_idx:04d}.parquet"
+                new_path = dir_path / new_filename
+
+                try:
+                    # Slice the table for this shard
+                    shard_table = table.slice(start_idx, row_count)
+
+                    # Get compression from original file
+                    compression = parquet_file.metadata.row_group(0).column(0).compression
+
+                    # Write the shard with the same schema and compression
+                    pq.write_table(
+                        shard_table,
+                        new_path,
+                        compression=compression,
+                        row_group_size=rows_per_shard
+                    )
+
+                    new_files.append(new_path)
+                    print(f"Created shard {new_filename} with {row_count} rows")
+
+                except Exception as e:
+                    print(f"Failed to write shard {new_filename}: {str(e)}")
+                    success = False
+                    # Clean up any new shards that were created
+                    for new_file in new_files:
+                        try:
+                            new_file.unlink()
+                        except Exception:
+                            pass
+                    break
+
+            # Only delete original file if all shards were created successfully
+            if success:
+                file_path.unlink()
+                print(f"Successfully resharded {file_path} into {num_shards} shards")
+
+        except Exception as e:
+            print(f"Failed to process {file_path}: {str(e)}")
+            continue
 
 
 class FineTuneDataset(torch.utils.data.Dataset):
@@ -35,6 +128,7 @@ class ShardedFileDataset(IterableDataset):
     def __init__(self, path):
         self.dir = path
         self.files = os.listdir(path)
+        print(f"Loaded {len(self.files)} shards from {path}")
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         """
@@ -226,8 +320,11 @@ def download_dclm_data(data_dir: str):
 
     local_dir = os.path.join(data_dir, "dclm")
     huggingface_hub.snapshot_download(
-        repo_id="TaylorAI/dclm_subset_1pct", repo_type="dataset", local_dir=local_dir
+        repo_id="TaylorAI/dclm_subset_1pct",
+        repo_type="dataset",
+        local_dir=local_dir
     )
+    reshard(local_dir, 20_000) # 20k examples per shard
 
 
 def get_dclm_dataset(data_dir: str):
@@ -247,17 +344,20 @@ def download_fineweb_data(data_dir: str):
         repo_type="dataset",
         local_dir=local_dir,
     )
+    reshard(local_dir, 20_000) # 50k examples per shard
 
 
 def get_fineweb_dataset(data_dir: str):
     # there is no reason to stream this when we can just download once at build time
     # NUM_SAMPLES = 10_000_000
-    local_dir = os.path.join(data_dir, "fineweb/sample/10BT")
+    # local_dir = os.path.join(data_dir, "fineweb/sample/10BT")
+    local_dir = os.path.join(data_dir, "fineweb")
     ds = ShardedFileDataset(local_dir)
     return ds  # , NUM_SAMPLES
 
 
 def download_wiki_data(data_dir: str):
+    import shutil
     import huggingface_hub
 
     local_dir = os.path.join(data_dir, "wikipedia_en")
@@ -267,11 +367,20 @@ def download_wiki_data(data_dir: str):
         repo_type="dataset",
         local_dir=local_dir,
     )
+    # move everything to the wikipedia_en directory
+    subdir = os.path.join(local_dir, "20231101.en")
+    for f in os.listdir(subdir):
+        src = os.path.join(subdir, f)
+        dst = os.path.join(local_dir, f)
+        shutil.move(src, dst)
+
+    reshard(local_dir, 10_000) # 10k examples per shard
 
 
 def get_wiki_dataset(data_dir: str):
     # 7m articles, unclear how many chunks. probably like 30m?
-    local_dir = os.path.join(data_dir, "wikipedia_en/20231101.en")
+    # local_dir = os.path.join(data_dir, "wikipedia_en/20231101.en")
+    local_dir = os.path.join(data_dir, "wikipedia_en")
     ds = ShardedFileDataset(local_dir)
     return ds  # , num_samples
 

@@ -132,29 +132,54 @@ def scale_grads(model: nn.Module, scale_factor: float):
         if param.grad is not None:
             param.grad.data.mul_(scale_factor)
 
+# def pad_or_truncate(
+#     tensor: torch.Tensor,
+#     value: int,
+#     dim: int,
+#     max_length: int,
+# ) -> torch.Tensor:
+#     """
+#     Pads or truncates a tensor to a specified maximum length along a given dimension.
+
+#     Args:
+#         tensor (torch.Tensor): Input tensor to be padded or truncated
+#         value (int): Padding value to use when extending the tensor
+#         dim (int): Dimension along which to pad or truncate
+#         max_length (int): Target length for the specified dimension
+
+#     Returns:
+#         torch.Tensor: Padded or truncated tensor with the specified length along the given dimension
+#     """
+#     current_length = tensor.size(dim)
+
+#     if current_length == max_length:
+#         return tensor
+
+#     if current_length > max_length:
+#         # Truncate the tensor
+#         if dim == 0:
+#             return tensor[:max_length]
+#         elif dim == 1:
+#             return tensor[:, :max_length]
+#         elif dim == 2:
+#             return tensor[:, :, :max_length]
+#         else:
+#             raise ValueError(f"Invalid dimension: {dim}. must be 0, 1, or 2")
+
+#     else:
+#         # Pad the tensor
+#         pad_size = [0] * (2 * tensor.ndim)
+#         pad_size[2 * dim + 1] = max_length - current_length
+#         return torch.nn.functional.pad(tensor, pad_size, mode='constant', value=value)
 def pad_or_truncate(
     tensor: torch.Tensor,
     value: int,
     dim: int,
     max_length: int,
 ) -> torch.Tensor:
-    """
-    Pads or truncates a tensor to a specified maximum length along a given dimension.
-
-    Args:
-        tensor (torch.Tensor): Input tensor to be padded or truncated
-        value (int): Padding value to use when extending the tensor
-        dim (int): Dimension along which to pad or truncate
-        max_length (int): Target length for the specified dimension
-
-    Returns:
-        torch.Tensor: Padded or truncated tensor with the specified length along the given dimension
-    """
     current_length = tensor.size(dim)
-
     if current_length == max_length:
         return tensor
-
     if current_length > max_length:
         # Truncate the tensor
         if dim == 0:
@@ -165,9 +190,9 @@ def pad_or_truncate(
             return tensor[:, :, :max_length]
         else:
             raise ValueError(f"Invalid dimension: {dim}. must be 0, 1, or 2")
-
     else:
         # Pad the tensor
         pad_size = [0] * (2 * tensor.ndim)
-        pad_size[2 * dim + 1] = max_length - current_length
+        # Fix: Pad from the end, so for dim=1 we want [..., 0, pad_amount]
+        pad_size[2 * (tensor.ndim - 1 - dim) + 1] = max_length - current_length
         return torch.nn.functional.pad(tensor, pad_size, mode='constant', value=value)
